@@ -1,6 +1,6 @@
 ## Sediment - Active Directory Password Filter (WIP)
 Sediment is an Active Directory [password filter](https://docs.microsoft.com/en-us/windows/desktop/secmgmt/password-filters) built in Rust. Using modern data structures, it is able to provide maximum performance
-with zero compromise to security. Passwords are handled using [`zeroize`](https://crates.io/crates/zeroize), guaranteeing that the memory behind will be freed when no longer needed. Event logs are generated for
+with zero compromise to security. Passwords are handled using [`zeroize`](https://crates.io/crates/zeroize), guaranteeing that the memory behind will be cleared when no longer needed. Event logs are generated for
 transparency into rejections, without logging the plaintext password being used.
 
 ## Setup
