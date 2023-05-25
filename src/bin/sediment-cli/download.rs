@@ -2,6 +2,7 @@ use std::{fs::{File, OpenOptions}, time::Duration, num::NonZeroU32, sync::{Arc, 
 use indicatif::{ProgressBar, ProgressStyle};
 use flate2::{write::GzEncoder, Compression};
 use governor::{RateLimiter, Quota, Jitter};
+use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use clap::Parser;
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
@@ -14,13 +15,7 @@ pub struct Download {}
 
 fn generate_ranges() -> Vec<String> {
     (0x00000..=0xFFFFF)
-        .into_iter()
-        .map(|i: i32| i.to_be_bytes()
-                        .into_iter()
-                        .map(|b| format!("{b:02X}"))
-                        .collect::<Vec<String>>()
-                        .join("")[3..].to_string()
-        )
+        .map(|i: i32| format!("{i:05X}"))
         .collect()
 }
 
@@ -32,11 +27,30 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
 
     let app_path: String = {
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let app_key = hklm.create_subkey("SOFTWARE\\sediment").expect("Failed to open registry key");
-        app_key.get_value("Path").expect("Failed to get app path")
+        let app_key = match hklm.create_subkey("SOFTWARE\\sediment") {
+            Ok(key) => key,
+            Err(_) => {
+                progress.abandon_with_message("Cannot open registry key. Are you running as admin?");
+                return;
+            }
+        };
+
+        match app_key.get_value("Path") {
+            Ok(path) => path,
+            Err(_) => {
+                progress.abandon_with_message("Could not find 'Path' key. Is the installation corrupt?");
+                return;
+            }
+        }
     };
 
-    let download_state = sled::open(format!("{app_path}\\state")).expect("Failed to open state db");
+    let download_state = match sled::open(format!("{app_path}\\state")) {
+        Ok(db) => db,
+        Err(_account_name) => {
+            progress.abandon_with_message("Could not open state database. Are the permissions correct?");
+            return;
+        }
+    };
     
     let (tx, mut rx) = mpsc::channel(256);
     let task_tx = tx.clone();
@@ -44,7 +58,7 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
     let task_progress = progress.clone();
     let task_dl_state = download_state.clone();
     tokio::spawn(async move {
-        let limiter = Arc::new(RateLimiter::direct(Quota::per_second(NonZeroU32::new(256).unwrap())));
+        let limiter = Arc::new(RateLimiter::direct(Quota::per_second(NonZeroU32::new(384).unwrap())));
         for range in generate_ranges() {
             limiter.until_ready_with_jitter(Jitter::up_to(Duration::from_millis(1500))).await;
             if !task_handler.load(Ordering::SeqCst) {
@@ -67,18 +81,22 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                     return;
                 }
 
-                let res = client.get(url).send().await;
+                let res = if let Some(etag) = download_state.get(range.clone()).expect("Failed to check db") {
+                    client.get(url).header("If-None-Match", String::from_utf8(etag.to_vec()).unwrap()).send()
+                } else {
+                    client.get(url).send()
+                }.await;
+                
                 match res {
                     Ok(resp) => {
-                        let headers = resp.headers();
-                        if let Some(etag) = download_state.get(range.clone()).expect("Failed to check db") {
-                            if headers["etag"] == String::from_utf8(etag.to_vec()).unwrap() {
-                                progress.inc(1);
-                                return;
-                            }
+                        if resp.status() == StatusCode::NOT_MODIFIED {
+                            progress.inc(1);
+                            return;
                         }
-                        
+
+                        let headers = resp.headers();
                         let etag = headers["etag"].to_str().unwrap().to_string();
+
                         match resp.text().await {
                             Ok(content) => {
                                 tx.send(Ok((range.clone(), etag, content))).await.expect("Failed to send content through channel");
@@ -127,14 +145,19 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                 progress.inc(1);
             },
             Err(err) => {
-                println!("Error getting some hashes:\n{err:?}");
+                println!("Encountered an error in a download:\n{err:?}");
             }
         }
     }
 
     progress.set_message("Finishing streams...");
     for stream in range_streams.into_values() {
-        stream.finish().expect("Failed to finish stream");
+        match stream.finish() {
+            Ok(_) => {},
+            Err(err) => {
+                println!("Encountered an error closing a stream: {err:?}");
+            }
+        }
     }
 
     if !ctrlc_handler.load(Ordering::SeqCst) {
