@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read};
-use windows_sys::Win32::Foundation::*;
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
+use windows_sys::Win32::Foundation::*;
 use xorf::{Filter, Xor8, HashProxy};
 use sha1::{Sha1, Digest};
 use log::{error, info};
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn PasswordChangeNotify() {
         let mut username = create_unicode!("ChangeNotifyTester");
-        
+
         assert_eq!(unsafe{ super::PasswordChangeNotify(&mut username, 0, null_mut()) }, 0);
     } 
 
