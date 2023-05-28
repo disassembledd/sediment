@@ -9,6 +9,10 @@ keywords = ["active-directory", "security", "password-filter"]
 description = "An Active Directory password filter."
 homepage = "https://github.com/rusty-sediment/sediment"
 repository = "https://github.com/rusty-sediment/sediment"
+exclude = [
+    "Cargo.lock",
+    "Cargo.toml.orig"
+]
 
 [[bin]]
 name = "sediment-cli"
