@@ -30,8 +30,8 @@ fn main() {
     }).expect("Failed to set Ctrl+C handler");
     
     match cli.command {
-        Commands::Download(_) => {
-            rt.block_on(download::main(handler, None));
+        Commands::Download(download) => {
+            rt.block_on(download::main(handler, download.download_path.clone(), download.filter_path.clone()));
         }
     }
 }

@@ -1,18 +1,30 @@
-use std::{fs::{File, OpenOptions}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::HashMap, io::Write, path::PathBuf};
+use std::{fs::{File, OpenOptions, read_dir}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write}, path::PathBuf};
 use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use indicatif::{ProgressBar, ProgressStyle};
-use flate2::{write::GzEncoder, Compression};
+use flate2::{write::GzEncoder, read::GzDecoder, Compression};
 use tokio::sync::mpsc::{self, Sender};
 use reqwest::StatusCode;
 use clap::Parser;
+use xorf::{HashProxy, Xor8};
 
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
 type Limiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware<QuantaInstant>>;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
-pub struct Download {}
+pub struct Download {
+    /// Sets the path to download the hashes themselves.
+    /// Defaults to the 'Path' key in the app's registry.
+    #[arg(long)]
+    pub download_path: Option<PathBuf>,
+
+    /// Sets the path to parse the downloaded hashes into
+    /// the filter data structure. Defaults to the 'FilterPath'
+    /// key in the app's registry.
+    #[arg(long)]
+    pub filter_path: Option<PathBuf>
+}
 
 #[derive(Clone)]
 struct DownloadHandler {
@@ -90,7 +102,7 @@ fn generate_ranges() -> Vec<String> {
         .collect()
 }
 
-pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>) {
+pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>, filter_path: Option<PathBuf>) {
     let client = reqwest::Client::new();
     let progress_bar = ProgressBar::new(0xFFFFFu64).with_style(ProgressStyle::with_template("[{elapsed_precise}] {msg} {wide_bar} {human_pos}/{human_len}").unwrap());
 
@@ -176,6 +188,83 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
             Err(err) => {
                 println!("Encountered an error closing a stream: {err:?}");
             }
+        }
+    }
+
+    let filter_path = filter_path.unwrap_or({
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        // Safe to unwrap if first call was successful
+        let app_key = hklm.create_subkey("SOFTWARE\\sediment").unwrap();
+
+        let path: String = match app_key.get_value("FilterPath") {
+            Ok(path) => path,
+            Err(_) => {
+                progress_bar.abandon_with_message("Could not find 'FilterPath' key. Is the installation corrupt?");
+                return;
+            }
+        };
+
+        path.into()
+    });
+    
+    progress_bar.set_message("Converting hashes into filter structure...");
+    match read_dir(download_path.unwrap_or(format!("{app_path}\\downloads").into())) {
+        Ok(dir_iter) => {
+            for entry in dir_iter {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        println!("Failed to get directory entry: {err:?}");
+                        continue;
+                    }
+                };
+
+                let file = match File::open(entry.path()) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        println!("Failed to open hash file: {err:?}");
+                        continue;
+                    }
+                };
+
+                let mut decoder = GzDecoder::new(file);
+                let mut hashes = String::new();
+                match decoder.read_to_string(&mut hashes) {
+                    Ok(_) => {},
+                    Err(err) => {
+                        println!("Failed to read hash file: {err:?}");
+                        continue;
+                    }
+                }
+
+                let hashes_array = hashes.lines()
+                                            .map(|h| h.trim().to_string())
+                                            .collect::<Vec<String>>();
+                let filter: HashProxy<String, DefaultHasher, Xor8> = HashProxy::from(&hashes_array);
+                let filter_data = match bincode::serialize(&filter) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        println!("Failed to serialize hash filter: {err:?}");
+                        continue;
+                    }
+                };
+
+                let mut output_file = match File::create(format!("{}\\{}", filter_path.display(), entry.file_name().to_str().unwrap())) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        println!("Failed to create hash filter file: {err:?}");
+                        continue;
+                    }
+                };
+
+                match output_file.write_all(&filter_data) {
+                    Ok(_) => {},
+                    Err(err) => println!("Failed to write hash filter to file: {err:?}")
+                }
+            }
+        },
+        Err(err) => {
+            println!("Failed to read hash directory: {err:?}");
         }
     }
 
