@@ -35,3 +35,26 @@ pub extern "system" fn PasswordFilter(
 ) -> BOOLEAN {
     true.into()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use std::ptr::null_mut;
+    use super::*;
+
+    // Placeholder tests for now
+    #[test]
+    fn InitializeChangeNotify_test() {
+        assert!(InitializeChangeNotify() > 0);
+    }
+
+    #[test]
+    fn PasswordChangeNotify_test() {
+        assert_eq!(PasswordChangeNotify(null_mut(), 0, null_mut()), 0);
+    }
+
+    #[test]
+    fn PasswordFilter_test() {
+        assert!(PasswordFilter(null_mut(), null_mut(), null_mut(), 0) > 0);
+    }
+}

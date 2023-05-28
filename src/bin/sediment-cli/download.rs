@@ -1,10 +1,10 @@
 use std::{fs::{File, OpenOptions}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::HashMap, io::Write, path::PathBuf};
+use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use indicatif::{ProgressBar, ProgressStyle};
 use flate2::{write::GzEncoder, Compression};
-use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
-use reqwest::StatusCode;
 use tokio::sync::mpsc::{self, Sender};
+use reqwest::StatusCode;
 use clap::Parser;
 
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
@@ -183,5 +183,20 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
         progress_bar.abandon_with_message("Downloads cancelled");
     } else {
         progress_bar.finish_with_message("Downloads finished");
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_ranges_test() {
+        let ranges = generate_ranges();
+
+        assert_eq!(ranges.first(), Some(&String::from("00000")));
+        assert_eq!(ranges.last(), Some(&String::from("FFFFF")));
+        assert_eq!(ranges.len(), 1048576);
     }
 }
