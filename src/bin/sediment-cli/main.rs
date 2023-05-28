@@ -31,7 +31,7 @@ fn main() {
     
     match cli.command {
         Commands::Download(download) => {
-            rt.block_on(download::main(handler, download.download_path.clone(), download.filter_path.clone()));
+            rt.block_on(download::main(handler, download.download_path, download.filter_path));
         }
     }
 }
