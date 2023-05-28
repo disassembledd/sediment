@@ -1,60 +1,193 @@
 #![allow(non_snake_case)]
-use std::{collections::{HashMap, hash_map::DefaultHasher}, sync::RwLock};
+use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read};
 use windows_sys::Win32::Foundation::*;
-use xorf::{BinaryFuse8, HashProxy};
-use once_cell::sync::OnceCell;
+use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
+use xorf::{Filter, Xor8, HashProxy};
+use sha1::{Sha1, Digest};
+use log::{error, info};
+use zeroize::Zeroize;
+use core::slice;
 
-type HashFuse = HashProxy<String, DefaultHasher, BinaryFuse8>;
-static FILTER: OnceCell<RwLock<HashMap<String, HashFuse>>> = OnceCell::new();
+
+unsafe fn string_from_windows(unicode_string: *mut UNICODE_STRING) -> Result<String, FromUtf16Error> {
+    let buffer = unsafe { slice::from_raw_parts_mut((*unicode_string).Buffer, ((*unicode_string).Length / 2) as usize) };
+    let res = String::from_utf16(buffer);
+    buffer.zeroize();
+
+    res
+}
+
+#[macro_export]
+macro_rules! create_unicode {
+    ( $data:expr ) => {
+        {
+            let mut data = String::from($data)
+                                        .encode_utf16()
+                                        .collect::<Vec<u16>>();
+
+            UNICODE_STRING {
+                Length: (data.len() * 2) as u16,
+                MaximumLength: (data.capacity() * 2) as u16,
+                Buffer: data.as_mut_ptr()
+            }
+        }
+    }
+}
 
 pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
-    if FILTER.set(RwLock::new(HashMap::new())).is_err() {
-        return false.into()
+    match winlog::init("Sediment") {
+        Ok(_) => {},
+        Err(_) => return false.into()
     }
 
-    // thread::spawn(move || {
-    //     // TODO: Handle `FILTER` being updated when necessary.
-    // });
-
+    info!("Successfully loaded password filter.");
     true.into()
 }
 
-pub extern "system" fn PasswordChangeNotify(
-    _username: *mut UNICODE_STRING,
+/// # Safety
+/// Called by Windows whenever a user successfully changes
+/// or sets their password.
+pub unsafe extern "system" fn PasswordChangeNotify(
+    username: *mut UNICODE_STRING,
     _relative_id: u32,
-    _new_password: *mut UNICODE_STRING
+    new_password: *mut UNICODE_STRING
 ) -> NTSTATUS {
+    let buffer = unsafe { slice::from_raw_parts_mut((*new_password).Buffer, ((*new_password).Length / 2) as usize) };
+    buffer.zeroize();
+
+    let username = match string_from_windows(username) {
+        Ok(username) => username,
+        Err(err) => {
+            error!("Failed to read username:\n{err:?}");
+            return STATUS_SUCCESS
+        }
+    };
+
+    info!("{username} successfully set their password");
+
     STATUS_SUCCESS
 }
 
-pub extern "system" fn PasswordFilter(
+/// # Safety
+/// Called by Windows whenever a user attempts to change
+/// or set their password.
+pub unsafe extern "system" fn PasswordFilter(
     _account_name: *mut UNICODE_STRING,
     _full_name: *mut UNICODE_STRING,
-    _password: *mut UNICODE_STRING,
+    password: *mut UNICODE_STRING,
     _set_operation: BOOLEAN
 ) -> BOOLEAN {
-    true.into()
+    if (*password).Length <= 1 {
+        error!("Password was empty");
+        return false.into()
+    }
+    
+    let mut password = match string_from_windows(password) {
+        Ok(password) => password,
+        Err(_) => {
+            error!("Failed to parse password");
+            return false.into()
+        }
+    };
+    
+    let mut hasher = Sha1::new();
+    hasher.update(password.as_bytes());
+    let hash = hasher.finalize();
+    let password_hashed = format!("{hash:X}");
+    password.zeroize();
+    
+    let filter_path: String = {
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let app_key = match hklm.create_subkey("SOFTWARE\\sediment") {
+            Ok(key) => key,
+            Err(err) => {
+                error!("Cannot open registry key:\n{err:?}");
+                return false.into()
+            }
+        };
+
+        match app_key.get_value("FilterPath") {
+            Ok(path) => path,
+            Err(err) => {
+                error!("Could not find 'FilterPath' key:\n{err:?}");
+                return false.into()
+            }
+        }
+    };
+
+    let mut filter_file = match File::open(format!("{filter_path}\\{}", &password_hashed[..2])) {
+        Ok(filter_file) => filter_file,
+        Err(err) => {
+            error!("Failed to open filter file:\n{err:?}");
+            return false.into()
+        }
+    };
+
+    let mut buffer = Vec::new();
+    match filter_file.read_to_end(&mut buffer) {
+        Ok(_) => {},
+        Err(err) => {
+            error!("Failed to read filter data:\n{err:?}");
+            return false.into()
+        }
+    };
+
+    let pw_filter: HashProxy<String, DefaultHasher, Xor8> = match bincode::deserialize(&buffer) {
+        Ok(filter) => filter,
+        Err(err) => {
+            error!("Failed to deserialize filter data:\n{err:?}");
+            return false.into()
+        }
+    };
+
+    if pw_filter.contains(&password_hashed) {
+        false.into()
+    } else {
+        true.into()
+    }
 }
 
 
 #[cfg(test)]
 mod tests {
+    use windows_sys::Win32::Foundation::*;
     use std::ptr::null_mut;
-    use super::*;
 
-    // Placeholder tests for now
+    use super::{create_unicode, PasswordFilter};
+
     #[test]
-    fn InitializeChangeNotify_test() {
-        assert!(InitializeChangeNotify() > 0);
+    fn InitializeChangeNotify() {
+        assert!(super::InitializeChangeNotify() > 0);
     }
 
     #[test]
-    fn PasswordChangeNotify_test() {
-        assert_eq!(PasswordChangeNotify(null_mut(), 0, null_mut()), 0);
+    fn PasswordChangeNotify() {
+        let mut username = create_unicode!("ChangeNotifyTester");
+        
+        assert_eq!(unsafe{ super::PasswordChangeNotify(&mut username, 0, null_mut()) }, 0);
+    } 
+
+    #[test]
+    fn PasswordFilter_emptypassword() {
+        let mut password = create_unicode!("");
+
+        let false_bool: BOOLEAN = false.into();
+        assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, false_bool);
     }
 
     #[test]
-    fn PasswordFilter_test() {
-        assert!(PasswordFilter(null_mut(), null_mut(), null_mut(), 0) > 0);
+    fn PasswordFilter_goodpassword() {
+        let mut password = create_unicode!("RustySediments");
+
+        let true_bool: BOOLEAN = true.into();
+        assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, true_bool);
+    }
+
+    #[test]
+    fn PasswordFilter_badpassword() {
+        let mut password = create_unicode!("car1234");
+
+        let false_bool: BOOLEAN = false.into();
+        assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, false_bool);
     }
 }
