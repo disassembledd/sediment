@@ -17,23 +17,6 @@ unsafe fn string_from_windows(unicode_string: *mut UNICODE_STRING) -> Result<Str
     res
 }
 
-#[macro_export]
-macro_rules! create_unicode {
-    ( $data:expr ) => {
-        {
-            let mut data = String::from($data)
-                                        .encode_utf16()
-                                        .collect::<Vec<u16>>();
-
-            UNICODE_STRING {
-                Length: (data.len() * 2) as u16,
-                MaximumLength: (data.capacity() * 2) as u16,
-                Buffer: data.as_mut_ptr()
-            }
-        }
-    }
-}
-
 pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
     match winlog::init("Sediment") {
         Ok(_) => {},
@@ -52,8 +35,10 @@ pub unsafe extern "system" fn PasswordChangeNotify(
     _relative_id: u32,
     new_password: *mut UNICODE_STRING
 ) -> NTSTATUS {
-    let buffer = unsafe { slice::from_raw_parts_mut((*new_password).Buffer, ((*new_password).Length / 2) as usize) };
-    buffer.zeroize();
+    if (*new_password).Length > 1 {
+        let buffer = unsafe { slice::from_raw_parts_mut((*new_password).Buffer, ((*new_password).Length / 2) as usize) };
+        buffer.zeroize();
+    }
 
     let username = match string_from_windows(username) {
         Ok(username) => username,
@@ -153,7 +138,23 @@ mod tests {
     use windows_sys::Win32::Foundation::*;
     use std::ptr::null_mut;
 
-    use super::{create_unicode, PasswordFilter};
+    use super::PasswordFilter;
+
+    macro_rules! create_unicode {
+        ( $data:expr ) => {
+            {
+                let mut data = String::from($data)
+                                            .encode_utf16()
+                                            .collect::<Vec<u16>>();
+
+                UNICODE_STRING {
+                    Length: (data.len() * 2) as u16,
+                    MaximumLength: (data.capacity() * 2) as u16,
+                    Buffer: data.as_mut_ptr()
+                }
+            }
+        }
+    }
 
     #[test]
     fn InitializeChangeNotify() {
@@ -163,22 +164,15 @@ mod tests {
     #[test]
     fn PasswordChangeNotify() {
         let mut username = create_unicode!("ChangeNotifyTester");
-
-        assert_eq!(unsafe{ super::PasswordChangeNotify(&mut username, 0, null_mut()) }, 0);
-    } 
-
-    #[test]
-    fn PasswordFilter_emptypassword() {
         let mut password = create_unicode!("");
 
-        let false_bool: BOOLEAN = false.into();
-        assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, false_bool);
+        assert_eq!(unsafe{ super::PasswordChangeNotify(&mut username, 0, &mut password) }, 0);
     }
-
+    
     #[test]
     fn PasswordFilter_goodpassword() {
         let mut password = create_unicode!("RustySediments");
-
+        
         let true_bool: BOOLEAN = true.into();
         assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, true_bool);
     }
@@ -186,6 +180,14 @@ mod tests {
     #[test]
     fn PasswordFilter_badpassword() {
         let mut password = create_unicode!("car1234");
+        
+        let false_bool: BOOLEAN = false.into();
+        assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, false_bool);
+    }
+
+    #[test]
+    fn PasswordFilter_emptypassword() {
+        let mut password = create_unicode!("");
 
         let false_bool: BOOLEAN = false.into();
         assert_eq!(unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) }, false_bool);
