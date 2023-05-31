@@ -14,7 +14,12 @@ repository = "https://github.com/rusty-sediment/sediment"
 name = "sediment-cli"
 required-features = ["cli"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "filter_benchmark"
+harness = false
 
 [dependencies]
 windows-sys = { version = "0.48", features = ["Win32_Foundation"] }
