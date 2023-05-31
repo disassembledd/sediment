@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
-use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read, hash::{Hash, Hasher}};
+use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read, hash::{Hash, Hasher}, os::windows::prelude::FileExt};
+use xorf::{Filter, BinaryFuse8, prelude::bfuse::hash_of_hash};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use windows_sys::Win32::Foundation::*;
-use xorf::{Filter, BinaryFuse8};
 use sha1::{Sha1, Digest};
 use log::{error, info};
 use zeroize::Zeroize;
@@ -113,28 +113,39 @@ pub unsafe extern "system" fn PasswordFilter(
     };
     password_hashed.zeroize();
 
-    let mut buffer = Vec::new();
-    match filter_file.read_to_end(&mut buffer) {
-        Ok(_) => {},
-        Err(err) => {
-            error!("Failed to read filter data:\n{err:?}");
-            return false.into()
-        }
-    };
+    let mut buffer = [0; 8];
+    filter_file.read_exact(&mut buffer).unwrap();
+    let seed = u64::from_le_bytes(buffer);
 
-    let pw_filter: BinaryFuse8 = match bincode::deserialize(&buffer) {
-        Ok(filter) => filter,
-        Err(err) => {
-            error!("Failed to deserialize filter data:\n{err:?}");
-            return false.into()
-        }
-    };
+    let mut buffer = [0; 4];
+    filter_file.read_exact(&mut buffer).unwrap();
+    let segment_length = u32::from_le_bytes(buffer);
 
-    if pw_filter.contains(&key) {
-        false.into()
-    } else {
-        true.into()
-    }
+    buffer.fill(0);
+    filter_file.read_exact(&mut buffer).unwrap();
+    let segment_length_mask = u32::from_le_bytes(buffer);
+
+    buffer.fill(0);
+    filter_file.read_exact(&mut buffer).unwrap();
+    let segment_count_length = u32::from_le_bytes(buffer);
+
+    let hash = xorf::prelude::mix(key, seed);
+    let mut fprint = xorf::fingerprint!(hash) as u8;
+    let (h0, h1, h2) = hash_of_hash(hash, segment_length, segment_length_mask, segment_count_length);
+
+    let mut buffer = [0; 1];
+    filter_file.seek_read(&mut buffer, (20 + h0) as u64).unwrap();
+    let h0 = buffer[0];
+    
+    filter_file.seek_read(&mut buffer, (20 + h1) as u64).unwrap();
+    let h1 = buffer[0];
+
+    filter_file.seek_read(&mut buffer, (20 + h2) as u64).unwrap();
+    let h2 = buffer[0];
+
+    fprint ^= h0 ^ h1 ^ h2;
+
+    (fprint != 0).into()
 }
 
 

@@ -19,9 +19,19 @@ macro_rules! create_unicode {
     }
 }
 
-pub fn filter_bench(c: &mut Criterion) {
+pub fn filter_good_bench(c: &mut Criterion) {
     c.bench_function(
-        "pass_filter",
+        "pass_good_filter",
+        |bencher| {
+            let mut password = create_unicode!(black_box("RustySediment"));
+            bencher.iter( || unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) })
+        }
+    );
+}
+
+pub fn filter_bad_bench(c: &mut Criterion) {
+    c.bench_function(
+        "pass_bad_filter",
         |bencher| {
             let mut password = create_unicode!(black_box("car1234"));
             bencher.iter( || unsafe{ PasswordFilter(null_mut(), null_mut(), &mut password, 0) })
@@ -29,5 +39,5 @@ pub fn filter_bench(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, filter_bench);
+criterion_group!(benches, filter_good_bench, filter_bad_bench);
 criterion_main!(benches);

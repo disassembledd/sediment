@@ -254,14 +254,6 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                         }
                     }
                 };
-                
-                let filter_data = match bincode::serialize(&filter) {
-                    Ok(data) => data,
-                    Err(err) => {
-                        println!("Failed to serialize hash filter: {err:?}");
-                        continue;
-                    }
-                };
 
                 let mut output_file = match File::create(format!("{}\\{}", filter_path.display(), entry.file_name().to_str().unwrap())) {
                     Ok(file) => file,
@@ -271,10 +263,13 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                     }
                 };
 
-                match output_file.write_all(&filter_data) {
-                    Ok(_) => {},
-                    Err(err) => println!("Failed to write hash filter to file: {err:?}")
-                }
+                output_file.write_all(&filter.seed.to_le_bytes()).unwrap();
+                output_file.write_all(&filter.segment_length.to_le_bytes()).unwrap();
+                output_file.write_all(&filter.segment_length_mask.to_le_bytes()).unwrap();
+                output_file.write_all(&filter.segment_count_length.to_le_bytes()).unwrap();
+
+                let data: Vec<u8> = filter.fingerprints.bytes().flatten().collect();
+                output_file.write_all(&data).unwrap();
             }
         },
         Err(err) => {
