@@ -1,12 +1,12 @@
-use std::{fs::{File, OpenOptions, read_dir}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write}, path::PathBuf};
+use std::{fs::{File, OpenOptions, read_dir}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write}, path::PathBuf, hash::{Hash, Hasher}};
 use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use indicatif::{ProgressBar, ProgressStyle};
 use flate2::{write::GzEncoder, read::GzDecoder, Compression};
 use tokio::sync::mpsc::{self, Sender};
 use reqwest::StatusCode;
+use xorf::BinaryFuse8;
 use clap::Parser;
-use xorf::{HashProxy, Xor8};
 
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
 type Limiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware<QuantaInstant>>;
@@ -238,9 +238,23 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                 }
 
                 let hashes_array = hashes.lines()
-                                            .map(|h| h.trim().to_string())
-                                            .collect::<Vec<String>>();
-                let filter: HashProxy<String, DefaultHasher, Xor8> = HashProxy::from(&hashes_array);
+                                            .map(|h| {
+                                                let mut hasher = DefaultHasher::new();
+                                                h.trim().to_string().hash(&mut hasher);
+                                                hasher.finish()
+                                            })
+                                            .collect::<Vec<u64>>();
+
+                let filter = loop {
+                    match BinaryFuse8::try_from(&hashes_array) {
+                        Ok(filter) => break filter,
+                        Err(_) => {
+                            progress_bar.set_message("Failed to create filter, trying again...");
+                            continue;
+                        }
+                    }
+                };
+                
                 let filter_data = match bincode::serialize(&filter) {
                     Ok(data) => data,
                     Err(err) => {

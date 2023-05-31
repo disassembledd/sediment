@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
-use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read};
+use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read, hash::{Hash, Hasher}};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use windows_sys::Win32::Foundation::*;
-use xorf::{Filter, Xor8, HashProxy};
+use xorf::{Filter, BinaryFuse8};
 use sha1::{Sha1, Digest};
 use log::{error, info};
 use zeroize::Zeroize;
@@ -78,8 +78,12 @@ pub unsafe extern "system" fn PasswordFilter(
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     let hash = hasher.finalize();
-    let password_hashed = format!("{hash:X}");
+    let mut password_hashed = format!("{hash:X}");
     password.zeroize();
+
+    let mut hasher = DefaultHasher::new();
+    password_hashed.hash(&mut hasher);
+    let key = hasher.finish();
     
     let filter_path: String = {
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -107,6 +111,7 @@ pub unsafe extern "system" fn PasswordFilter(
             return false.into()
         }
     };
+    password_hashed.zeroize();
 
     let mut buffer = Vec::new();
     match filter_file.read_to_end(&mut buffer) {
@@ -117,7 +122,7 @@ pub unsafe extern "system" fn PasswordFilter(
         }
     };
 
-    let pw_filter: HashProxy<String, DefaultHasher, Xor8> = match bincode::deserialize(&buffer) {
+    let pw_filter: BinaryFuse8 = match bincode::deserialize(&buffer) {
         Ok(filter) => filter,
         Err(err) => {
             error!("Failed to deserialize filter data:\n{err:?}");
@@ -125,7 +130,7 @@ pub unsafe extern "system" fn PasswordFilter(
         }
     };
 
-    if pw_filter.contains(&password_hashed) {
+    if pw_filter.contains(&key) {
         false.into()
     } else {
         true.into()
