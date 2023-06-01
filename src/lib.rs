@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use std::{collections::{hash_map::DefaultHasher}, string::FromUtf16Error, fs::File, io::Read, hash::{Hash, Hasher}, os::windows::prelude::FileExt};
-use xorf::{Filter, BinaryFuse8, prelude::bfuse::hash_of_hash};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
+use xorf::prelude::bfuse::hash_of_hash;
 use windows_sys::Win32::Foundation::*;
 use sha1::{Sha1, Digest};
 use log::{error, info};
@@ -9,6 +9,8 @@ use zeroize::Zeroize;
 use core::slice;
 
 
+/// Consumes the given `UNICODE_STRING` buffer, zeroizing it and
+/// returning a Rust `String` in the process.
 unsafe fn string_from_windows(unicode_string: *mut UNICODE_STRING) -> Result<String, FromUtf16Error> {
     let buffer = unsafe { slice::from_raw_parts_mut((*unicode_string).Buffer, ((*unicode_string).Length / 2) as usize) };
     let res = String::from_utf16(buffer);
@@ -17,6 +19,7 @@ unsafe fn string_from_windows(unicode_string: *mut UNICODE_STRING) -> Result<Str
     res
 }
 
+/// Initializes the Event Log provider on first load.
 pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
     match winlog::init("Sediment") {
         Ok(_) => {},
@@ -27,7 +30,9 @@ pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
     true.into()
 }
 
-/// # Safety
+/// Logs if a user password was successfully changed.
+/// 
+/// ## Safety
 /// Called by Windows whenever a user successfully changes
 /// or sets their password.
 pub unsafe extern "system" fn PasswordChangeNotify(
@@ -53,7 +58,11 @@ pub unsafe extern "system" fn PasswordChangeNotify(
     STATUS_SUCCESS
 }
 
-/// # Safety
+/// Receives the user's plaintext password and checks against
+/// the compromised and banned word stores to see if it is
+/// allowed.
+/// 
+/// ## Safety
 /// Called by Windows whenever a user attempts to change
 /// or set their password.
 pub unsafe extern "system" fn PasswordFilter(
