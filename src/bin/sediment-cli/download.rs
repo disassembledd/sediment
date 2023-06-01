@@ -1,4 +1,4 @@
-use std::{fs::{File, OpenOptions, read_dir}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write}, path::PathBuf, hash::{Hash, Hasher}};
+use std::{fs::{File, OpenOptions, read_dir, remove_file}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write}, path::PathBuf, hash::{Hash, Hasher}};
 use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -255,7 +255,8 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                     }
                 };
 
-                let mut output_file = match File::create(format!("{}\\{}", filter_path.display(), entry.file_name().to_str().unwrap())) {
+                let file_path = format!("{}\\{}", filter_path.display(), entry.file_name().to_str().unwrap());
+                let mut output_file = match File::create(file_path.clone()) {
                     Ok(file) => file,
                     Err(err) => {
                         println!("Failed to create hash filter file: {err:?}");
@@ -263,13 +264,38 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                     }
                 };
 
-                output_file.write_all(&filter.seed.to_le_bytes()).unwrap();
-                output_file.write_all(&filter.segment_length.to_le_bytes()).unwrap();
-                output_file.write_all(&filter.segment_length_mask.to_le_bytes()).unwrap();
-                output_file.write_all(&filter.segment_count_length.to_le_bytes()).unwrap();
+                let metadata_results = vec![
+                    output_file.write_all(&filter.seed.to_le_bytes()),
+                    output_file.write_all(&filter.segment_length.to_le_bytes()),
+                    output_file.write_all(&filter.segment_length_mask.to_le_bytes()),
+                    output_file.write_all(&filter.segment_count_length.to_le_bytes())
+                ];
+
+                if metadata_results.into_iter().any(|res| res.is_err()) {
+                    println!("Failed to write filter metadata");
+                    drop(output_file);
+
+                    match remove_file(file_path) {
+                        Ok(_) => {},
+                        Err(err) => println!("Failed to delete corrupt hash filter file: {err:?}")
+                    }
+
+                    continue;
+                }
 
                 let data: Vec<u8> = filter.fingerprints.bytes().flatten().collect();
-                output_file.write_all(&data).unwrap();
+                match output_file.write_all(&data) {
+                    Ok(_) => {},
+                    Err(err) => {
+                        println!("Failed to write hash filter fingerprints to the file: {err:?}");
+                        drop(output_file);
+
+                        match remove_file(file_path) {
+                            Ok(_) => {},
+                            Err(err) => println!("Failed to delete corrupt hash filter file: {err:?}")
+                        }
+                    }
+                }
             }
         },
         Err(err) => {
