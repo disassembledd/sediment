@@ -167,6 +167,11 @@ pub unsafe extern "system" fn PasswordFilter(
     };
 
     let (seed, segment_length, segment_length_mask, segment_count_length) = get_filter_metadata(&mut filter_file);
+    if segment_count_length % segment_length != 0 {
+        error!("Filter file appears corrupt.");
+        return false.into()
+    }
+    
     let hash = xorf::prelude::mix(key, seed);
     let mut fprint = xorf::fingerprint!(hash) as u8;
 
