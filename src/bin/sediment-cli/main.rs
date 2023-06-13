@@ -2,6 +2,7 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use clap::{Parser, Subcommand};
 
 mod download;
+mod update;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -12,7 +13,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Download(download::Download)
+    Download(download::Download),
+    Update(update::Update)
 }
 
 fn main() {
@@ -30,8 +32,11 @@ fn main() {
     }).expect("Failed to set Ctrl+C handler");
     
     match cli.command {
-        Commands::Download(download) => {
-            rt.block_on(download::main(handler, download.download_path, download.filter_path));
+        Commands::Download(options) => {
+            rt.block_on(download::main(handler, options.download_path, options.filter_path));
+        },
+        Commands::Update(options) => {
+            update::main(options)
         }
     }
 }
