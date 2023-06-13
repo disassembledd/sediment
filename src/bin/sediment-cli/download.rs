@@ -1,4 +1,4 @@
-use std::{fs::{File, read_dir, rename}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write}, path::PathBuf, hash::{Hash, Hasher}};
+use std::{fs::{File, read_dir, rename}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write, Seek, BufReader, BufRead}, path::{PathBuf, Path}, hash::{Hash, Hasher}, ffi::OsStr, rc::Rc, cell::Cell};
 use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
 use flate2::{write::GzEncoder, read::GzDecoder, Compression};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
@@ -185,9 +185,62 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
             }
         }
     }
+    
+    let user_data = if Path::new(&format!("{dl_path}\\user")).exists() {
+        match File::open(format!("{dl_path}\\user")) {
+            Ok(file) => {
+                Some(BufReader::new(file).lines().flatten().collect::<Vec<String>>())
+            },
+            Err(err) => {
+                println!("Encountered an error opening existing user file: {err:?}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     progress_bar.set_message("Finishing streams...");
-    for (range, stream) in range_streams.into_iter() {
+    for (range, mut stream) in range_streams.into_iter() {
+        // Add hashes from user file
+        if let Some(user_data) = user_data.clone() {
+            match stream.get_mut().rewind() {
+                Ok(_) => {},
+                Err(err) => {
+                    println!("Encountered an error seeking to start of stream: {err:?}");
+                    continue;
+                }
+            }
+
+            // Get hashes matching current range
+            let mut hashes = Vec::new();
+            for hash in user_data {
+                if hash[..2] == range {
+                    hashes.push(hash);
+                }
+            }
+
+            // Read the current stream for checking duplicates
+            let mut stream_data = String::new();
+            match stream.read_to_string(&mut stream_data) {
+                Ok(_) => {},
+                Err(err) => {
+                    println!("Encountered an error reading the stream data: {err:?}");
+                    continue;
+                }
+            }
+
+            // Remove duplicates from `hashes`
+            for hash in stream_data.lines() {
+                hashes.retain(|h| h != hash);
+            }
+
+            // Write user hashes to stream
+            for hash in hashes {
+                stream.write_all(hash.as_bytes()).expect("Failed to write hash into file");
+            }
+        }
+
         // Finish the Gzip stream and drop the underlying File
         match stream.finish() {
             Ok(writer) => drop(writer),
@@ -239,7 +292,8 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                 };
 
                 let path = entry.path();
-                if !path.ends_with(".temp") {
+                let file_name = path.file_name().unwrap_or(OsStr::new("")).to_str().unwrap();
+                if path.is_file() && !path.ends_with(".temp") && file_name != "user" {
                     let hashes = {
                         let file = match File::open(path.clone()) {
                             Ok(file) => file,
