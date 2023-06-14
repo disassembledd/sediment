@@ -1,8 +1,30 @@
+use windows_sys::Win32::{System::Threading::{OpenProcessToken, GetCurrentProcess}, Security::{TOKEN_QUERY, TOKEN_ELEVATION, GetTokenInformation, TokenElevation}, Foundation::HANDLE};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use clap::{Parser, Subcommand};
 
 mod download;
 mod update;
+
+
+fn is_elevated() -> bool {
+    let mut token_handle = HANDLE::default();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) } != 0 {
+        let mut elevation = TOKEN_ELEVATION{ TokenIsElevated: 0 };
+        if unsafe {
+            GetTokenInformation(
+            token_handle,
+            TokenElevation,
+            (&mut elevation) as *mut TOKEN_ELEVATION as *mut _,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut 0
+            )
+        } != 0 {
+            return elevation.TokenIsElevated != 0
+        }
+    }
+    
+    false
+}
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -18,6 +40,11 @@ enum Commands {
 }
 
 fn main() {
+    if !is_elevated() {
+        println!("Please run the CLI as administrator. It requires access to registry keys for configuration purposes.");
+        return;
+    }
+
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Builder::new_multi_thread()

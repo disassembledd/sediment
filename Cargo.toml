@@ -22,7 +22,7 @@ name = "filter_benchmark"
 harness = false
 
 [dependencies]
-windows-sys = { version = "0.48", features = ["Win32_Foundation"] }
+windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 winlog = { package = "winlog2", version = "0.3" }
 xorf = { git = "https://github.com/rusty-sediment/xorf.git", branch = "patch-1", version = "0.8" }
 bincode = "1.3"
