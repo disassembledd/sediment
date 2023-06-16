@@ -1,12 +1,51 @@
 use std::{collections::hash_map::DefaultHasher, io::{self, Read}, hash::{Hash, Hasher}, fs::File, os::windows::prelude::FileExt};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 use sha1::{Sha1, Digest};
+use xorf::prelude::bfuse::hash_of_hash;
 use zeroize::Zeroize;
+use log::error;
 
+
+/// Checks for the given password within the filter data structure
+pub(crate) fn check_pass_in_filter(password: String) -> bool {
+    let (file_name, key) = get_name_and_key(password);
+    let filter_path = match get_filter_path() {
+        Ok(path) => path,
+        Err(err) => {
+            error!("Failed to retrieve path to filter files:\n{err:?}");
+            return false
+        }
+    };
+
+    let mut filter_file = match File::open(format!("{filter_path}\\{file_name}")) {
+        Ok(filter_file) => filter_file,
+        Err(err) => {
+            error!("Failed to open filter file:\n{err:?}");
+            return false
+        }
+    };
+
+    let (seed, segment_length, segment_length_mask, segment_count_length) = get_filter_metadata(&mut filter_file);
+    if segment_count_length % segment_length != 0 {
+        error!("Filter file appears corrupt.");
+        return false
+    }
+    
+    let hash = xorf::prelude::mix(key, seed);
+    let mut fprint = xorf::fingerprint!(hash) as u8;
+
+    let (h0, h1, h2) = get_filter_indices(
+        &mut filter_file,
+        hash_of_hash(hash, segment_length, segment_length_mask, segment_count_length)
+    );
+
+    fprint ^= h0 ^ h1 ^ h2;
+    fprint != 0
+}
 
 /// Consumes the given password, zeroizing it and its hashes
 /// and providing the filter's file name and key in the process.
-pub(crate) fn get_name_and_key(mut password: String) -> (String, u64) {
+fn get_name_and_key(mut password: String) -> (String, u64) {
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     let hash = hasher.finalize();
@@ -24,7 +63,7 @@ pub(crate) fn get_name_and_key(mut password: String) -> (String, u64) {
 }
 
 /// Retrieves the `FilterPath` key from the registry.
-pub(crate) fn get_filter_path() -> Result<String, io::Error> {
+fn get_filter_path() -> Result<String, io::Error> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let app_key = hklm.create_subkey("SOFTWARE\\sediment")?;
 
@@ -33,7 +72,7 @@ pub(crate) fn get_filter_path() -> Result<String, io::Error> {
 
 /// Reads the first 20 bytes from the filter file for the
 /// metadata necessary to compute the hash indices.
-pub(crate) fn get_filter_metadata(filter_file: &mut File) -> (u64, u32, u32, u32) {
+fn get_filter_metadata(filter_file: &mut File) -> (u64, u32, u32, u32) {
     let mut buffer = [0; 8];
     filter_file.read_exact(&mut buffer).unwrap();
     let seed = u64::from_le_bytes(buffer);
@@ -55,7 +94,7 @@ pub(crate) fn get_filter_metadata(filter_file: &mut File) -> (u64, u32, u32, u32
 
 /// Seeks and reads 3 different bytes based on the hash indices
 /// provided in `hashes`.
-pub(crate) fn get_filter_indices(filter_file: &mut File, hashes: (u32, u32, u32)) -> (u8, u8, u8) {
+fn get_filter_indices(filter_file: &mut File, hashes: (u32, u32, u32)) -> (u8, u8, u8) {
     let mut buffer = [0; 1];
     filter_file.seek_read(&mut buffer, (20 + hashes.0) as u64).unwrap();
     let h0 = buffer[0];

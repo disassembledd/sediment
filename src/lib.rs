@@ -100,39 +100,11 @@ pub unsafe extern "system" fn PasswordFilter(
         }
     };
     
-    let (file_name, key) = filter::get_name_and_key(password);
-    let filter_path = match filter::get_filter_path() {
-        Ok(path) => path,
-        Err(err) => {
-            error!("Failed to retrieve path to filter files:\n{err:?}");
-            return false.into()
-        }
-    };
-
-    let mut filter_file = match File::open(format!("{filter_path}\\{file_name}")) {
-        Ok(filter_file) => filter_file,
-        Err(err) => {
-            error!("Failed to open filter file:\n{err:?}");
-            return false.into()
-        }
-    };
-
-    let (seed, segment_length, segment_length_mask, segment_count_length) = filter::get_filter_metadata(&mut filter_file);
-    if segment_count_length % segment_length != 0 {
-        error!("Filter file appears corrupt.");
+    if !filter::check_pass_in_filter(password) {
         return false.into()
     }
-    
-    let hash = xorf::prelude::mix(key, seed);
-    let mut fprint = xorf::fingerprint!(hash) as u8;
 
-    let (h0, h1, h2) = filter::get_filter_indices(
-        &mut filter_file,
-        hash_of_hash(hash, segment_length, segment_length_mask, segment_count_length)
-    );
-
-    fprint ^= h0 ^ h1 ^ h2;
-    (fprint != 0).into()
+    true.into()
 }
 
 
