@@ -201,7 +201,7 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
     };
 
     progress_bar.set_message("Finishing streams...");
-    for (range, mut stream) in range_streams.into_iter() {
+    for (range, mut stream) in range_streams {
         // Add hashes from user file
         if let Some(user_data) = user_data.clone() {
             match stream.get_mut().rewind() {
