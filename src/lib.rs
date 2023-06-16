@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use std::{string::FromUtf16Error, fs::File};
+use std::{fs::File, ptr::null_mut, string::FromUtf16Error};
 use xorf::prelude::bfuse::hash_of_hash;
 use windows_sys::Win32::Foundation::*;
 use log::{error, info};
@@ -8,6 +8,21 @@ use core::slice;
 
 mod filter;
 
+
+pub fn PassInFilter(password: String) -> bool {
+    let mut data = password
+        .encode_utf16()
+        .collect::<Vec<u16>>();
+
+    let mut password = UNICODE_STRING {
+        Length: (data.len() * 2) as u16,
+        MaximumLength: (data.capacity() * 2) as u16,
+        Buffer: data.as_mut_ptr()
+    };
+    
+    let res = unsafe { PasswordFilter(null_mut(), null_mut(), &mut password, 0) };
+    res == 0
+}
 
 /// Consumes the given `UNICODE_STRING` buffer, zeroizing it and
 /// returning a Rust `String` in the process.
