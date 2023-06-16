@@ -1,6 +1,5 @@
 #![allow(non_snake_case)]
-use std::{fs::File, ptr::null_mut, string::FromUtf16Error};
-use xorf::prelude::bfuse::hash_of_hash;
+use std::{ptr::null_mut, string::FromUtf16Error};
 use windows_sys::Win32::Foundation::*;
 use log::{error, info};
 use zeroize::Zeroize;
