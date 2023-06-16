@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 mod download;
 mod update;
+mod check;
 
 
 fn is_elevated() -> bool {
@@ -36,7 +37,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Download(download::Download),
-    Update(update::Update)
+    Update(update::Update),
+    Check(check::Check)
 }
 
 fn main() {
@@ -64,6 +66,9 @@ fn main() {
         },
         Commands::Update(options) => {
             update::main(options)
+        },
+        Commands::Check(options) => {
+            check::main(options)
         }
     }
 }
