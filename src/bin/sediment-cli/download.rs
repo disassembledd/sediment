@@ -102,6 +102,69 @@ fn generate_ranges() -> Vec<String> {
         .collect()
 }
 
+fn finish_streams(range_streams: HashMap<String, GzEncoder<File>>, mut range_states: HashMap<String, Vec<String>>, user_data: Option<Vec<String>>, download_state: sled::Db, dl_path: String) {
+    for (range, mut stream) in range_streams {
+        // Add hashes from user file
+        if let Some(user_data) = user_data.clone() {
+            match stream.get_mut().rewind() {
+                Ok(_) => {},
+                Err(err) => {
+                    println!("Encountered an error seeking to start of stream: {err:?}");
+                    continue;
+                }
+            }
+
+            // Get hashes matching current range
+            let mut hashes = Vec::new();
+            for hash in user_data {
+                if hash[..2] == range {
+                    hashes.push(hash);
+                }
+            }
+
+            // Read the current stream for checking duplicates
+            let mut stream_data = String::new();
+            match stream.read_to_string(&mut stream_data) {
+                Ok(_) => {},
+                Err(err) => {
+                    println!("Encountered an error reading the stream data: {err:?}");
+                    continue;
+                }
+            }
+
+            // Remove duplicates from `hashes`
+            for hash in stream_data.lines() {
+                hashes.retain(|h| h != hash);
+            }
+
+            // Write user hashes to stream
+            for hash in hashes {
+                stream.write_all(hash.as_bytes()).expect("Failed to write hash into file");
+            }
+        }
+
+        // Finish the Gzip stream and drop the underlying File
+        match stream.finish() {
+            Ok(writer) => drop(writer),
+            Err(err) => {
+                println!("Encountered an error closing a stream: {err:?}");
+                continue;
+            }
+        }
+
+        // Replace previous downloaded range with results from tempfile
+        match rename(format!("{dl_path}\\{range}.temp"), format!("{dl_path}\\{range}")) {
+            Ok(_) => {
+                // On successful move, save download state of all ranges involved
+                for etag in range_states.remove(&range).expect("Encountered an error retrieving expected range states") {
+                    download_state.insert(range.clone(), etag.as_bytes()).expect("Failed to insert into state db");
+                }
+            },
+            Err(err) => println!("Encountered an error overwriting destination file: {err:?}")
+        }
+    }
+}
+
 pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>, filter_path: Option<PathBuf>) {
     let client = reqwest::Client::new();
     let progress_bar = ProgressBar::new(0xFFFFFu64).with_style(ProgressStyle::with_template("[{elapsed_precise}] {msg} {wide_bar} {human_pos}/{human_len}").unwrap());
@@ -201,66 +264,7 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
     };
 
     progress_bar.set_message("Finishing streams...");
-    for (range, mut stream) in range_streams {
-        // Add hashes from user file
-        if let Some(user_data) = user_data.clone() {
-            match stream.get_mut().rewind() {
-                Ok(_) => {},
-                Err(err) => {
-                    println!("Encountered an error seeking to start of stream: {err:?}");
-                    continue;
-                }
-            }
-
-            // Get hashes matching current range
-            let mut hashes = Vec::new();
-            for hash in user_data {
-                if hash[..2] == range {
-                    hashes.push(hash);
-                }
-            }
-
-            // Read the current stream for checking duplicates
-            let mut stream_data = String::new();
-            match stream.read_to_string(&mut stream_data) {
-                Ok(_) => {},
-                Err(err) => {
-                    println!("Encountered an error reading the stream data: {err:?}");
-                    continue;
-                }
-            }
-
-            // Remove duplicates from `hashes`
-            for hash in stream_data.lines() {
-                hashes.retain(|h| h != hash);
-            }
-
-            // Write user hashes to stream
-            for hash in hashes {
-                stream.write_all(hash.as_bytes()).expect("Failed to write hash into file");
-            }
-        }
-
-        // Finish the Gzip stream and drop the underlying File
-        match stream.finish() {
-            Ok(writer) => drop(writer),
-            Err(err) => {
-                println!("Encountered an error closing a stream: {err:?}");
-                continue;
-            }
-        }
-
-        // Replace previous downloaded range with results from tempfile
-        match rename(format!("{dl_path}\\{range}.temp"), format!("{dl_path}\\{range}")) {
-            Ok(_) => {
-                // On successful move, save download state of all ranges involved
-                for etag in range_states.remove(&range).expect("Encountered an error retrieving expected range states") {
-                    download_state.insert(range.clone(), etag.as_bytes()).expect("Failed to insert into state db");
-                }
-            },
-            Err(err) => println!("Encountered an error overwriting destination file: {err:?}")
-        }
-    }
+    finish_streams(range_streams, range_states, user_data, download_state, dl_path.clone());
 
     let filter_path: String = match filter_path {
         Some(path) => path.to_string_lossy().to_string(),
