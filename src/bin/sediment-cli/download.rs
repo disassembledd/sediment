@@ -165,6 +165,107 @@ fn finish_streams(range_streams: HashMap<String, GzEncoder<File>>, mut range_sta
     }
 }
 
+fn hashes_to_filters(dl_path: String, filter_path: String, progress_bar: &ProgressBar) {
+    match read_dir(dl_path) {
+        Ok(dir_iter) => {
+            for entry in dir_iter {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        println!("Failed to get directory entry: {err:?}");
+                        continue;
+                    }
+                };
+
+                let path = entry.path();
+                let file_name = path.file_name().unwrap_or(OsStr::new("")).to_str().unwrap();
+                if path.is_file() && !path.ends_with(".temp") && file_name != "user" {
+                    let hashes = {
+                        let file = match File::open(path.clone()) {
+                            Ok(file) => file,
+                            Err(err) => {
+                                println!("Failed to open hash file: {err:?}");
+                                continue;
+                            }
+                        };
+
+                        let mut decoder = GzDecoder::new(file);
+                        let mut hashes = String::new();
+                        match decoder.read_to_string(&mut hashes) {
+                            Ok(_) => {},
+                            Err(err) => {
+                                println!("Failed to read hash file: {err:?}");
+                                continue;
+                            }
+                        }
+
+                        hashes
+                    };
+    
+                    let hashes_array = hashes.lines()
+                        .map(|h| {
+                            let mut hasher = DefaultHasher::new();
+                            h.trim().hash(&mut hasher);
+                            hasher.finish()
+                        })
+                        .collect::<Vec<u64>>();
+    
+                    let filter = loop {
+                        match BinaryFuse8::try_from(&hashes_array) {
+                            Ok(filter) => break filter,
+                            Err(_) => {
+                                progress_bar.set_message("Failed to create filter, trying again...");
+                                continue;
+                            }
+                        }
+                    };
+    
+                    let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+                    // Scope to drop `output_file` when finished writing
+                    {
+                        let mut output_file = match File::create(format!("{filter_path}\\{file_name}.temp")) {
+                            Ok(file) => file,
+                            Err(err) => {
+                                println!("Failed to create temp hash filter file: {err:?}");
+                                continue;
+                            }
+                        };
+        
+                        let metadata_results = vec![
+                            output_file.write_all(&filter.seed.to_le_bytes()),
+                            output_file.write_all(&filter.segment_length.to_le_bytes()),
+                            output_file.write_all(&filter.segment_length_mask.to_le_bytes()),
+                            output_file.write_all(&filter.segment_count_length.to_le_bytes())
+                        ];
+        
+                        if metadata_results.into_iter().any(|res| res.is_err()) {
+                            println!("Failed to write filter metadata");
+                            continue;
+                        }
+        
+                        let data: Vec<u8> = filter.fingerprints.bytes().flatten().collect();
+                        match output_file.write_all(&data) {
+                            Ok(_) => {},
+                            Err(err) => {
+                                println!("Failed to write hash filter fingerprints to the file: {err:?}");
+                                continue;
+                            }
+                        }
+                    }
+
+                    match rename(format!("{filter_path}\\{file_name}.temp"), format!("{filter_path}\\{file_name}")) {
+                        Ok(_) => {},
+                        Err(err) => println!("Failed to replace the hash filter file with the temp file: {err:?}")
+                    }
+                }
+            }
+        },
+        Err(err) => {
+            println!("Failed to read hash directory: {err:?}");
+        }
+    }
+}
+
 pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>, filter_path: Option<PathBuf>) {
     let client = reqwest::Client::new();
     let progress_bar = ProgressBar::new(0xFFFFFu64).with_style(ProgressStyle::with_template("[{elapsed_precise}] {msg} {wide_bar} {human_pos}/{human_len}").unwrap());
@@ -284,104 +385,7 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
     };
     
     progress_bar.set_message("Converting hashes into filter structure...");
-    match read_dir(dl_path) {
-        Ok(dir_iter) => {
-            for entry in dir_iter {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(err) => {
-                        println!("Failed to get directory entry: {err:?}");
-                        continue;
-                    }
-                };
-
-                let path = entry.path();
-                let file_name = path.file_name().unwrap_or(OsStr::new("")).to_str().unwrap();
-                if path.is_file() && !path.ends_with(".temp") && file_name != "user" {
-                    let hashes = {
-                        let file = match File::open(path.clone()) {
-                            Ok(file) => file,
-                            Err(err) => {
-                                println!("Failed to open hash file: {err:?}");
-                                continue;
-                            }
-                        };
-
-                        let mut decoder = GzDecoder::new(file);
-                        let mut hashes = String::new();
-                        match decoder.read_to_string(&mut hashes) {
-                            Ok(_) => {},
-                            Err(err) => {
-                                println!("Failed to read hash file: {err:?}");
-                                continue;
-                            }
-                        }
-
-                        hashes
-                    };
-    
-                    let hashes_array = hashes.lines()
-                        .map(|h| {
-                            let mut hasher = DefaultHasher::new();
-                            h.trim().hash(&mut hasher);
-                            hasher.finish()
-                        })
-                        .collect::<Vec<u64>>();
-    
-                    let filter = loop {
-                        match BinaryFuse8::try_from(&hashes_array) {
-                            Ok(filter) => break filter,
-                            Err(_) => {
-                                progress_bar.set_message("Failed to create filter, trying again...");
-                                continue;
-                            }
-                        }
-                    };
-    
-                    let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-                    // Scope to drop `output_file` when finished writing
-                    {
-                        let mut output_file = match File::create(format!("{filter_path}\\{file_name}.temp")) {
-                            Ok(file) => file,
-                            Err(err) => {
-                                println!("Failed to create temp hash filter file: {err:?}");
-                                continue;
-                            }
-                        };
-        
-                        let metadata_results = vec![
-                            output_file.write_all(&filter.seed.to_le_bytes()),
-                            output_file.write_all(&filter.segment_length.to_le_bytes()),
-                            output_file.write_all(&filter.segment_length_mask.to_le_bytes()),
-                            output_file.write_all(&filter.segment_count_length.to_le_bytes())
-                        ];
-        
-                        if metadata_results.into_iter().any(|res| res.is_err()) {
-                            println!("Failed to write filter metadata");
-                            continue;
-                        }
-        
-                        let data: Vec<u8> = filter.fingerprints.bytes().flatten().collect();
-                        match output_file.write_all(&data) {
-                            Ok(_) => {},
-                            Err(err) => {
-                                println!("Failed to write hash filter fingerprints to the file: {err:?}");
-                                continue;
-                            }
-                        }
-                    }
-
-                    match rename(format!("{filter_path}\\{file_name}.temp"), format!("{filter_path}\\{file_name}")) {
-                        Ok(_) => {},
-                        Err(err) => println!("Failed to replace the hash filter file with the temp file: {err:?}")
-                    }
-                }
-            }
-        },
-        Err(err) => {
-            println!("Failed to read hash directory: {err:?}");
-        }
-    }
+    hashes_to_filters(dl_path, filter_path, &progress_bar);
 
     if !ctrlc_handler.load(Ordering::SeqCst) {
         progress_bar.abandon_with_message("Downloads cancelled");
