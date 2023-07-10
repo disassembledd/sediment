@@ -1,18 +1,37 @@
-use std::{fs::{File, read_dir, rename}, time::Duration, num::NonZeroU32, sync::{Arc, atomic::{AtomicBool, Ordering}}, collections::{HashMap, hash_map::DefaultHasher}, io::{Read, Write, Seek, BufReader, BufRead}, path::{PathBuf, Path}, hash::{Hash, Hasher}, ffi::OsStr};
-use governor::{RateLimiter, Quota, Jitter, state::{NotKeyed, InMemoryState}, clock::{QuantaClock, QuantaInstant}, middleware::NoOpMiddleware};
-use flate2::{write::GzEncoder, read::GzDecoder, Compression};
-use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
-use indicatif::{ProgressBar, ProgressStyle};
-use tokio::sync::mpsc::{self, Sender};
-use reqwest::StatusCode;
-use xorf::BinaryFuse8;
 use clap::Parser;
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use governor::{
+    clock::{QuantaClock, QuantaInstant},
+    middleware::NoOpMiddleware,
+    state::{InMemoryState, NotKeyed},
+    Jitter, Quota, RateLimiter,
+};
+use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::StatusCode;
+use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
+    ffi::OsStr,
+    fs::{read_dir, rename, File},
+    hash::{Hash, Hasher},
+    io::{BufRead, BufReader, Read, Seek, Write},
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::sync::mpsc::{self, Sender};
+use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+use xorf::BinaryFuse8;
 
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
 type Limiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware<QuantaInstant>>;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
+/// Configuration for the `download` subcommand.
 pub struct Download {
     /// Sets the path to download the hashes themselves.
     /// Defaults to the 'Path' key in the app's registry.
@@ -23,31 +42,54 @@ pub struct Download {
     /// the filter data structure. Defaults to the 'FilterPath'
     /// key in the app's registry.
     #[arg(long)]
-    pub filter_path: Option<PathBuf>
+    pub filter_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
+/// Responsible for handling the downloads from haveibeenpwned.
 struct DownloadHandler {
     client: reqwest::Client,
     progress_bar: ProgressBar,
     download_state: sled::Db,
     ctrlc_handler: Arc<AtomicBool>,
-    limiter: Arc<Limiter>
+    limiter: Arc<Limiter>,
 }
 
 impl DownloadHandler {
-    pub fn new(client: reqwest::Client, progress_bar: ProgressBar, download_state: sled::Db, ctrlc_handler: Arc<AtomicBool>, limiter: Arc<Limiter>) -> Self {
+    /// Creates a new DownloadHandler, taking in clones for everything
+    /// except the client and the limiter.
+    pub fn new(
+        client: reqwest::Client,
+        progress_bar: ProgressBar,
+        download_state: sled::Db,
+        ctrlc_handler: Arc<AtomicBool>,
+        limiter: Arc<Limiter>,
+    ) -> Self {
         progress_bar.set_message("Starting...");
-        Self { client, progress_bar, download_state, ctrlc_handler, limiter }
+        Self {
+            client,
+            progress_bar,
+            download_state,
+            ctrlc_handler,
+            limiter,
+        }
     }
 
-    pub async fn start_download(self, tx: Sender<Result<(String, String, String), reqwest::Error>>) {
+    /// Starts the downloads, passing the given `Sender` to `Self::download_range`
+    /// and making clones of `Self` to maintain the state.
+    pub async fn start_download(
+        self,
+        tx: Sender<Result<(String, String, String), reqwest::Error>>,
+    ) {
         self.progress_bar.set_message("Pages visited");
 
         for range in generate_ranges() {
-            self.limiter.until_ready_with_jitter(Jitter::up_to(Duration::from_millis(1500))).await;
+            self.limiter
+                .until_ready_with_jitter(Jitter::up_to(Duration::from_millis(1500)))
+                .await;
             if !self.ctrlc_handler.load(Ordering::SeqCst) {
-                self.progress_bar.set_message(format!("Stopping worker {range}..."));
+                self.progress_bar
+                    .set_message(format!("Stopping worker {range}..."));
                 return;
             }
 
@@ -59,19 +101,38 @@ impl DownloadHandler {
         }
     }
 
-    async fn download_range(self, tx: Sender<Result<(String, String, String), reqwest::Error>>, url: String, range: String) {
-        self.limiter.until_ready_with_jitter(Jitter::up_to(Duration::from_millis(500))).await;
+    /// Handles the download for the provided range. If the site responds
+    /// with `NOT_MODIFIED` then we skip the range, otherwise we send
+    /// the download results back to the `Receiver`.
+    async fn download_range(
+        self,
+        tx: Sender<Result<(String, String, String), reqwest::Error>>,
+        url: String,
+        range: String,
+    ) {
+        self.limiter
+            .until_ready_with_jitter(Jitter::up_to(Duration::from_millis(500)))
+            .await;
         if !self.ctrlc_handler.load(Ordering::SeqCst) {
-            self.progress_bar.set_message(format!("Stopping worker {range}..."));
+            self.progress_bar
+                .set_message(format!("Stopping worker {range}..."));
             return;
         }
 
-        let res = if let Some(etag) = self.download_state.get(range.clone()).expect("Failed to check db") {
-            self.client.get(url).header("If-None-Match", String::from_utf8(etag.to_vec()).unwrap()).send()
+        let res = if let Some(etag) = self
+            .download_state
+            .get(range.clone())
+            .expect("Failed to check db")
+        {
+            self.client
+                .get(url)
+                .header("If-None-Match", String::from_utf8(etag.to_vec()).unwrap())
+                .send()
         } else {
             self.client.get(url).send()
-        }.await;
-        
+        }
+        .await;
+
         match res {
             Ok(resp) => {
                 if resp.status() == StatusCode::NOT_MODIFIED {
@@ -84,30 +145,47 @@ impl DownloadHandler {
 
                 match resp.text().await {
                     Ok(content) => {
-                        tx.send(Ok((range, etag, content))).await.expect("Failed to send content through channel");
-                    },
-                    Err(err) => tx.send(Err(err)).await.expect("Failed to send text error through channel")
+                        tx.send(Ok((range, etag, content)))
+                            .await
+                            .expect("Failed to send content through channel");
+                    }
+                    Err(err) => tx
+                        .send(Err(err))
+                        .await
+                        .expect("Failed to send text error through channel"),
                 };
-            },
+            }
             Err(err) => {
-                tx.send(Err(err)).await.expect("Failed to send response error through channel");
+                tx.send(Err(err))
+                    .await
+                    .expect("Failed to send response error through channel");
             }
         }
     }
 }
 
+/// Convenience function to generate the hash ranges for the API calls.
 fn generate_ranges() -> Vec<String> {
     (0x00000..=0xFFFFF)
         .map(|i: i32| format!("{i:05X}"))
         .collect()
 }
 
-fn finish_streams(range_streams: HashMap<String, GzEncoder<File>>, mut range_states: HashMap<String, Vec<String>>, user_data: Option<Vec<String>>, download_state: sled::Db, dl_path: String) {
+/// Writes provided user hashes into the appropriate `GzEncoder`,
+/// finishes the stream to flush all data to the file, then updates
+/// the download state.
+fn finish_streams(
+    range_streams: HashMap<String, GzEncoder<File>>,
+    mut range_states: HashMap<String, Vec<String>>,
+    user_data: Option<Vec<String>>,
+    download_state: sled::Db,
+    dl_path: String,
+) {
     for (range, mut stream) in range_streams {
         // Add hashes from user file
         if let Some(user_data) = user_data.clone() {
             match stream.get_mut().rewind() {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(err) => {
                     println!("Encountered an error seeking to start of stream: {err:?}");
                     continue;
@@ -122,10 +200,10 @@ fn finish_streams(range_streams: HashMap<String, GzEncoder<File>>, mut range_sta
                 }
             }
 
-            // Read the current stream for checking duplicates
+            // Read the current stream to check for duplicates
             let mut stream_data = String::new();
             match stream.read_to_string(&mut stream_data) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(err) => {
                     println!("Encountered an error reading the stream data: {err:?}");
                     continue;
@@ -139,7 +217,9 @@ fn finish_streams(range_streams: HashMap<String, GzEncoder<File>>, mut range_sta
 
             // Write user hashes to stream
             for hash in hashes {
-                stream.write_all(hash.as_bytes()).expect("Failed to write hash into file");
+                stream
+                    .write_all(hash.as_bytes())
+                    .expect("Failed to write hash into file");
             }
         }
 
@@ -153,18 +233,28 @@ fn finish_streams(range_streams: HashMap<String, GzEncoder<File>>, mut range_sta
         }
 
         // Replace previous downloaded range with results from tempfile
-        match rename(format!("{dl_path}\\{range}.temp"), format!("{dl_path}\\{range}")) {
+        match rename(
+            format!("{dl_path}\\{range}.temp"),
+            format!("{dl_path}\\{range}"),
+        ) {
             Ok(_) => {
                 // On successful move, save download state of all ranges involved
-                for etag in range_states.remove(&range).expect("Encountered an error retrieving expected range states") {
-                    download_state.insert(range.clone(), etag.as_bytes()).expect("Failed to insert into state db");
+                for etag in range_states
+                    .remove(&range)
+                    .expect("Encountered an error retrieving expected range states")
+                {
+                    download_state
+                        .insert(range.clone(), etag.as_bytes())
+                        .expect("Failed to insert into state db");
                 }
-            },
-            Err(err) => println!("Encountered an error overwriting destination file: {err:?}")
+            }
+            Err(err) => println!("Encountered an error overwriting destination file: {err:?}"),
         }
     }
 }
 
+/// Reads compressed download files and turns the data into `BinaryFuse`
+/// filter objects, then writes the filter's data to a file.
 fn hashes_to_filters(dl_path: String, filter_path: String, progress_bar: &ProgressBar) {
     match read_dir(dl_path) {
         Ok(dir_iter) => {
@@ -192,7 +282,7 @@ fn hashes_to_filters(dl_path: String, filter_path: String, progress_bar: &Progre
                         let mut decoder = GzDecoder::new(file);
                         let mut hashes = String::new();
                         match decoder.read_to_string(&mut hashes) {
-                            Ok(_) => {},
+                            Ok(_) => {}
                             Err(err) => {
                                 println!("Failed to read hash file: {err:?}");
                                 continue;
@@ -201,74 +291,94 @@ fn hashes_to_filters(dl_path: String, filter_path: String, progress_bar: &Progre
 
                         hashes
                     };
-    
-                    let hashes_array = hashes.lines()
+
+                    let hashes_array = hashes
+                        .lines()
                         .map(|h| {
                             let mut hasher = DefaultHasher::new();
                             h.trim().hash(&mut hasher);
                             hasher.finish()
                         })
                         .collect::<Vec<u64>>();
-    
+
                     let filter = loop {
                         match BinaryFuse8::try_from(&hashes_array) {
                             Ok(filter) => break filter,
                             Err(_) => {
-                                progress_bar.set_message("Failed to create filter, trying again...");
+                                progress_bar
+                                    .set_message("Failed to create filter, trying again...");
                                 continue;
                             }
                         }
                     };
-    
+
                     let file_name = path.file_name().unwrap().to_string_lossy().to_string();
                     // Scope to drop `output_file` when finished writing
                     {
-                        let mut output_file = match File::create(format!("{filter_path}\\{file_name}.temp")) {
-                            Ok(file) => file,
-                            Err(err) => {
-                                println!("Failed to create temp hash filter file: {err:?}");
-                                continue;
-                            }
-                        };
-        
+                        let mut output_file =
+                            match File::create(format!("{filter_path}\\{file_name}.temp")) {
+                                Ok(file) => file,
+                                Err(err) => {
+                                    println!("Failed to create temp hash filter file: {err:?}");
+                                    continue;
+                                }
+                            };
+
                         let metadata_results = vec![
                             output_file.write_all(&filter.seed.to_le_bytes()),
                             output_file.write_all(&filter.segment_length.to_le_bytes()),
                             output_file.write_all(&filter.segment_length_mask.to_le_bytes()),
-                            output_file.write_all(&filter.segment_count_length.to_le_bytes())
+                            output_file.write_all(&filter.segment_count_length.to_le_bytes()),
                         ];
-        
+
                         if metadata_results.into_iter().any(|res| res.is_err()) {
                             println!("Failed to write filter metadata");
                             continue;
                         }
-        
+
                         let data: Vec<u8> = filter.fingerprints.bytes().flatten().collect();
                         match output_file.write_all(&data) {
-                            Ok(_) => {},
+                            Ok(_) => {}
                             Err(err) => {
-                                println!("Failed to write hash filter fingerprints to the file: {err:?}");
+                                println!(
+                                    "Failed to write hash filter fingerprints to the file: {err:?}"
+                                );
                                 continue;
                             }
                         }
                     }
 
-                    match rename(format!("{filter_path}\\{file_name}.temp"), format!("{filter_path}\\{file_name}")) {
-                        Ok(_) => {},
-                        Err(err) => println!("Failed to replace the hash filter file with the temp file: {err:?}")
+                    match rename(
+                        format!("{filter_path}\\{file_name}.temp"),
+                        format!("{filter_path}\\{file_name}"),
+                    ) {
+                        Ok(_) => {}
+                        Err(err) => println!(
+                            "Failed to replace the hash filter file with the temp file: {err:?}"
+                        ),
                     }
                 }
             }
-        },
+        }
         Err(err) => {
             println!("Failed to read hash directory: {err:?}");
         }
     }
 }
 
-pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>, filter_path: Option<PathBuf>) {
+/// Main entrypoint for the `download` subcommand.
+pub async fn main(
+    ctrlc_handler: Arc<AtomicBool>,
+    download_path: Option<PathBuf>,
+    filter_path: Option<PathBuf>,
+) {
     let client = reqwest::Client::new();
-    let progress_bar = ProgressBar::new(0xFFFFFu64).with_style(ProgressStyle::with_template("[{elapsed_precise}] {msg} {wide_bar} {human_pos}/{human_len}").unwrap());
+    let progress_bar = ProgressBar::new(0xFFFFFu64).with_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {msg} {wide_bar} {human_pos}/{human_len}",
+        )
+        .unwrap(),
+    );
 
     // Retrieve app and download path from registry
     let (app_path, dl_path) = {
@@ -276,7 +386,8 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
         let app_key = match hklm.create_subkey("SOFTWARE\\sediment") {
             Ok(key) => key,
             Err(_) => {
-                progress_bar.abandon_with_message("Cannot open registry key. Are you running as admin?");
+                progress_bar
+                    .abandon_with_message("Cannot open registry key. Are you running as admin?");
                 return;
             }
         };
@@ -284,7 +395,9 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
         let app: String = match app_key.get_value("Path") {
             Ok(path) => path,
             Err(_) => {
-                progress_bar.abandon_with_message("Could not find 'Path' key. Is the installation corrupt?");
+                progress_bar.abandon_with_message(
+                    "Could not find 'Path' key. Is the installation corrupt?",
+                );
                 return;
             }
         };
@@ -294,10 +407,12 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
             None => match app_key.get_value("DownloadPath") {
                 Ok(path) => path,
                 Err(_) => {
-                    progress_bar.abandon_with_message("Could not find 'DownloadPath' key. Is the installation corrupt?");
+                    progress_bar.abandon_with_message(
+                        "Could not find 'DownloadPath' key. Is the installation corrupt?",
+                    );
                     return;
                 }
-            }
+            },
         };
 
         (app, download)
@@ -306,22 +421,27 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
     let download_state = match sled::open(format!("{app_path}\\state")) {
         Ok(db) => db,
         Err(_account_name) => {
-            progress_bar.abandon_with_message("Could not open state database. Are the permissions correct?");
+            progress_bar.abandon_with_message(
+                "Could not open state database. Are the permissions correct?",
+            );
             return;
         }
     };
-    
+
     // Set up environment for downloading
     let (tx, mut rx) = mpsc::channel(256);
-    let limiter = Arc::new(RateLimiter::direct(Quota::per_second(NonZeroU32::new(384).unwrap())));
+    let limiter = Arc::new(RateLimiter::direct(Quota::per_second(
+        NonZeroU32::new(384).unwrap(),
+    )));
     let progress_clone = progress_bar.clone();
     let state_clone = download_state.clone();
     let ctrlc_clone = ctrlc_handler.clone();
 
-    let download_handler = DownloadHandler::new(client, progress_clone, state_clone, ctrlc_clone, limiter);
+    let download_handler =
+        DownloadHandler::new(client, progress_clone, state_clone, ctrlc_clone, limiter);
     let task_tx = tx.clone();
     tokio::spawn(download_handler.start_download(task_tx));
-    
+
     drop(tx);
     let mut range_streams: HashMap<String, GzEncoder<File>> = HashMap::new();
     let mut range_states: HashMap<String, Vec<String>> = HashMap::new();
@@ -333,28 +453,40 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
                 let range_name = range[..2].to_owned();
                 let filepath = format!("{dl_path}\\{range_name}.temp");
 
-                let stream = range_streams.entry(range_name.clone())
-                    .or_insert(GzEncoder::new(File::create(filepath).expect("Failed to open file"), Compression::new(9)));
-                
+                let stream = range_streams
+                    .entry(range_name.clone())
+                    .or_insert(GzEncoder::new(
+                        File::create(filepath).expect("Failed to open file"),
+                        Compression::new(9),
+                    ));
+
                 for line in content.lines() {
                     let hash = range.clone() + line.split(':').next().unwrap() + "\r\n";
-                    stream.write_all(hash.as_bytes()).expect("Failed to write hash into file");
+                    stream
+                        .write_all(hash.as_bytes())
+                        .expect("Failed to write hash into file");
                 }
 
-                range_states.entry(range_name).or_insert(Vec::new()).push(etag);
+                range_states
+                    .entry(range_name)
+                    .or_insert(Vec::new())
+                    .push(etag);
                 progress_bar.inc(1);
-            },
+            }
             Err(err) => {
                 println!("Encountered an error in a download:\n{err:?}");
             }
         }
     }
-    
+
     let user_data = if Path::new(&format!("{dl_path}\\user")).exists() {
         match File::open(format!("{dl_path}\\user")) {
-            Ok(file) => {
-                Some(BufReader::new(file).lines().flatten().collect::<Vec<String>>())
-            },
+            Ok(file) => Some(
+                BufReader::new(file)
+                    .lines()
+                    .flatten()
+                    .collect::<Vec<String>>(),
+            ),
             Err(err) => {
                 println!("Encountered an error opening existing user file: {err:?}");
                 None
@@ -365,7 +497,13 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
     };
 
     progress_bar.set_message("Finishing streams...");
-    finish_streams(range_streams, range_states, user_data, download_state, dl_path.clone());
+    finish_streams(
+        range_streams,
+        range_states,
+        user_data,
+        download_state,
+        dl_path.clone(),
+    );
 
     let filter_path: String = match filter_path {
         Some(path) => path.to_string_lossy().to_string(),
@@ -373,17 +511,19 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
             // Safe to unwrap if first call was successful
             let app_key = hklm.create_subkey("SOFTWARE\\sediment").unwrap();
-    
+
             match app_key.get_value("FilterPath") {
                 Ok(path) => path,
                 Err(_) => {
-                    progress_bar.abandon_with_message("Could not find 'FilterPath' key. Is the installation corrupt?");
+                    progress_bar.abandon_with_message(
+                        "Could not find 'FilterPath' key. Is the installation corrupt?",
+                    );
                     return;
                 }
             }
         }
     };
-    
+
     progress_bar.set_message("Converting hashes into filter structure...");
     hashes_to_filters(dl_path, filter_path, &progress_bar);
 
@@ -393,7 +533,6 @@ pub async fn main(ctrlc_handler: Arc<AtomicBool>, download_path: Option<PathBuf>
         progress_bar.finish_with_message("Downloads finished");
     }
 }
-
 
 #[cfg(test)]
 mod tests {
