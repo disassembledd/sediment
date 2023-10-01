@@ -380,8 +380,8 @@ pub async fn main(
         .unwrap(),
     );
 
-    // Retrieve app and download path from registry
-    let (app_path, dl_path) = {
+    // Retrieve app, download, and filter path from registry
+    let (app_path, dl_path, filter_path) = {
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
         let app_key = match hklm.create_subkey("SOFTWARE\\sediment") {
             Ok(key) => key,
@@ -415,7 +415,22 @@ pub async fn main(
             },
         };
 
-        (app, download)
+        let filter: String = match filter_path {
+            Some(path) => path.to_string_lossy().to_string(),
+            None => {
+                match app_key.get_value("FilterPath") {
+                    Ok(path) => path,
+                    Err(_) => {
+                        progress_bar.abandon_with_message(
+                            "Could not find 'FilterPath' key. Is the installation corrupt?",
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+
+        (app, download, filter)
     };
 
     let download_state = match sled::open(format!("{app_path}\\state")) {
@@ -504,25 +519,6 @@ pub async fn main(
         download_state,
         dl_path.clone(),
     );
-
-    let filter_path: String = match filter_path {
-        Some(path) => path.to_string_lossy().to_string(),
-        None => {
-            let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-            // Safe to unwrap if first call was successful
-            let app_key = hklm.create_subkey("SOFTWARE\\sediment").unwrap();
-
-            match app_key.get_value("FilterPath") {
-                Ok(path) => path,
-                Err(_) => {
-                    progress_bar.abandon_with_message(
-                        "Could not find 'FilterPath' key. Is the installation corrupt?",
-                    );
-                    return;
-                }
-            }
-        }
-    };
 
     progress_bar.set_message("Converting hashes into filter structure...");
     hashes_to_filters(dl_path, filter_path, &progress_bar);
