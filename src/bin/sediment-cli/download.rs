@@ -26,6 +26,8 @@ use tokio::sync::mpsc::{self, Sender};
 use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
 use xorf::BinaryFuse8;
 
+use sediment::get_regkey_value;
+
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
 type Limiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware<QuantaInstant>>;
 
@@ -382,17 +384,7 @@ pub async fn main(
 
     // Retrieve app, download, and filter path from registry
     let (app_path, dl_path, filter_path) = {
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let app_key = match hklm.create_subkey("SOFTWARE\\sediment") {
-            Ok(key) => key,
-            Err(_) => {
-                progress_bar
-                    .abandon_with_message("Cannot open registry key. Are you running as admin?");
-                return;
-            }
-        };
-
-        let app: String = match app_key.get_value("Path") {
+        let app: String = match get_regkey_value("Path") {
             Ok(path) => path,
             Err(_) => {
                 progress_bar.abandon_with_message(
@@ -404,7 +396,7 @@ pub async fn main(
 
         let download: String = match download_path {
             Some(path) => path.to_string_lossy().to_string(),
-            None => match app_key.get_value("DownloadPath") {
+            None => match get_regkey_value("DownloadPath") {
                 Ok(path) => path,
                 Err(_) => {
                     progress_bar.abandon_with_message(
@@ -418,7 +410,7 @@ pub async fn main(
         let filter: String = match filter_path {
             Some(path) => path.to_string_lossy().to_string(),
             None => {
-                match app_key.get_value("FilterPath") {
+                match get_regkey_value("FilterPath") {
                     Ok(path) => path,
                     Err(_) => {
                         progress_bar.abandon_with_message(

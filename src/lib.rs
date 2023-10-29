@@ -1,11 +1,15 @@
 #![allow(non_snake_case)]
 use core::slice;
 use log::{error, info};
-use std::{ptr::null_mut, string::FromUtf16Error};
+use std::{ptr::null_mut, string::FromUtf16Error, rc::Rc};
 use windows_sys::Win32::Foundation::*;
 use zeroize::Zeroize;
 
 mod filter;
+mod regkeys;
+mod normalize;
+
+pub use regkeys::get_regkey_value;
 
 /// Public exposure for testing the Win32 call and determining if
 /// the given password was found within the filter structure.
@@ -101,7 +105,7 @@ pub unsafe extern "system" fn PasswordFilter(
         return false.into();
     }
 
-    let password = match string_from_windows(password) {
+    let mut password = match string_from_windows(password) {
         Ok(password) => password,
         Err(_) => {
             error!("Failed to parse password");
@@ -109,8 +113,24 @@ pub unsafe extern "system" fn PasswordFilter(
         }
     };
 
-    if !filter::check_pass_in_filter(password) {
-        return false.into();
+    let normalize: u32 = match get_regkey_value("NormalizeFlag") {
+        Ok(norm) => norm,
+        Err(_) => {
+            error!("Failed to retrieve 'NormalizeFlag' regkey.");
+            return false.into();
+        }
+    };
+
+    if normalize == 1 {
+        normalize::replace_symbols(&mut password);
+    }
+
+    let password = Rc::new(password);
+    {
+        let password = Rc::clone(&password);
+        if !filter::check_pass_in_filter(password.as_ref()) {
+            return false.into();
+        }
     }
 
     true.into()
