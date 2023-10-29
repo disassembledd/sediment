@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::UNICODE_STRING;
 
-use sediment_rs::PasswordFilter;
+use sediment::PasswordFilter;
 macro_rules! create_unicode {
     ( $data:expr ) => {{
         let mut data = String::from($data).encode_utf16().collect::<Vec<u16>>();

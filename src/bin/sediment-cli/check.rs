@@ -1,5 +1,5 @@
 use clap::Parser;
-use sediment_rs::PassInFilter;
+use sediment::PassInFilter;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
