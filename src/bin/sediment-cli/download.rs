@@ -23,7 +23,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc::{self, Sender};
-use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
 use xorf::BinaryFuse8;
 
 use sediment::get_regkey_value;
