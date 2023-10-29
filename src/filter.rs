@@ -5,14 +5,14 @@ use std::{
     fs::File,
     hash::{Hash, Hasher},
     io::{self, Read},
-    os::windows::prelude::FileExt,
+    os::windows::prelude::FileExt
 };
 use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
 use xorf::prelude::bfuse::hash_of_hash;
 use zeroize::Zeroize;
 
 /// Checks for the given password within the filter data structure
-pub(crate) fn check_pass_in_filter(password: String) -> bool {
+pub(crate) fn check_pass_in_filter<T: Into<String>>(password: T) -> bool {
     let (file_name, key) = get_name_and_key(password);
     let filter_path = match get_filter_path() {
         Ok(path) => path,
@@ -56,7 +56,9 @@ pub(crate) fn check_pass_in_filter(password: String) -> bool {
 
 /// Consumes the given password, zeroizing it and its hashes
 /// and providing the filter's file name and key in the process.
-fn get_name_and_key(mut password: String) -> (String, u64) {
+fn get_name_and_key<T: Into<String>>(password: T) -> (String, u64) {
+    let mut password = password.into();
+
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     let hash = hasher.finalize();
