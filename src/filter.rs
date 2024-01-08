@@ -12,7 +12,7 @@ use xorf::prelude::bfuse::hash_of_hash;
 use zeroize::Zeroize;
 
 /// Checks for the given password within the filter data structure
-pub(crate) fn check_pass_in_filter<T: Into<String>>(password: T) -> bool {
+pub(crate) fn check_pass_in_filter(password: &str) -> bool {
     let (file_name, key) = get_name_and_key(password);
     let filter_path = match get_filter_path() {
         Ok(path) => path,
@@ -56,14 +56,11 @@ pub(crate) fn check_pass_in_filter<T: Into<String>>(password: T) -> bool {
 
 /// Consumes the given password, zeroizing it and its hashes
 /// and providing the filter's file name and key in the process.
-fn get_name_and_key<T: Into<String>>(password: T) -> (String, u64) {
-    let mut password = password.into();
-
+fn get_name_and_key(password: &str) -> (String, u64) {
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     let hash = hasher.finalize();
     let mut password_hashed = format!("{hash:X}");
-    password.zeroize();
 
     let mut hasher = DefaultHasher::new();
     password_hashed.hash(&mut hasher);

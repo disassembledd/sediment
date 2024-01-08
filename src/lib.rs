@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
 use core::slice;
-use log::{error, info};
-use std::{ptr::null_mut, string::FromUtf16Error, rc::Rc};
+use log::{error, info, warn};
+use std::{ptr::null_mut, string::FromUtf16Error};
 use windows_sys::Win32::Foundation::*;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 mod filter;
 mod regkeys;
@@ -46,8 +46,8 @@ unsafe fn string_from_windows(
 /// Initializes the Event Log provider on first load.
 pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
     match winlog::init("Sediment") {
-        Ok(_) => {}
-        Err(_) => return false.into(),
+        Ok(_) => {},
+        Err(_) => return false.into()
     }
 
     info!("Successfully loaded password filter.");
@@ -95,20 +95,28 @@ pub unsafe extern "system" fn PasswordChangeNotify(
 /// Called by Windows whenever a user attempts to change
 /// or set their password.
 pub unsafe extern "system" fn PasswordFilter(
-    _account_name: *mut UNICODE_STRING,
+    account_name: *mut UNICODE_STRING,
     _full_name: *mut UNICODE_STRING,
     password: *mut UNICODE_STRING,
     _set_operation: BOOLEAN,
 ) -> BOOLEAN {
     if (*password).Length <= 1 {
-        error!("Password was empty");
+        error!("Password was empty.");
         return false.into();
     }
 
-    let mut password = match string_from_windows(password) {
-        Ok(password) => password,
+    let user = match string_from_windows(account_name) {
+        Ok(user) => Zeroizing::new(user),
         Err(_) => {
-            error!("Failed to parse password");
+            error!("Failed to parse username.");
+            Zeroizing::new(String::from("UNKNOWN"))
+        }
+    };
+
+    let mut password = match string_from_windows(password) {
+        Ok(password) => Zeroizing::new(password),
+        Err(_) => {
+            error!("Failed to parse password for {}.", user.as_str());
             return false.into();
         }
     };
@@ -125,14 +133,12 @@ pub unsafe extern "system" fn PasswordFilter(
         normalize::replace_symbols(&mut password);
     }
 
-    let password = Rc::new(password);
-    {
-        let password = Rc::clone(&password);
-        if !filter::check_pass_in_filter(password.as_ref()) {
-            return false.into();
-        }
+    if !filter::check_pass_in_filter(password.as_str()) {
+        warn!("Password for {} failed compromised checklist.", user.as_str());
+        return false.into();
     }
 
+    info!("Password for {} passed all checks.", user.as_str());
     true.into()
 }
 
