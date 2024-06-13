@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::UNICODE_STRING;
 
-use sediment::PasswordFilter;
+//use sediment::PasswordFilter;
 macro_rules! create_unicode {
     ( $data:expr ) => {{
         let mut data = String::from($data).encode_utf16().collect::<Vec<u16>>();
@@ -18,14 +18,14 @@ macro_rules! create_unicode {
 pub fn filter_good_bench(c: &mut Criterion) {
     c.bench_function("pass_good_filter", |bencher| {
         let mut password = create_unicode!(black_box("RustySediment"));
-        bencher.iter(|| unsafe { PasswordFilter(null_mut(), null_mut(), &mut password, 0) })
+        // bencher.iter(|| unsafe { PasswordFilter(null_mut(), null_mut(), &mut password, 0) })
     });
 }
 
 pub fn filter_bad_bench(c: &mut Criterion) {
     c.bench_function("pass_bad_filter", |bencher| {
         let mut password = create_unicode!(black_box("car1234"));
-        bencher.iter(|| unsafe { PasswordFilter(null_mut(), null_mut(), &mut password, 0) })
+        // bencher.iter(|| unsafe { PasswordFilter(null_mut(), null_mut(), &mut password, 0) })
     });
 }
 

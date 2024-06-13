@@ -25,7 +25,7 @@ use std::{
 use tokio::sync::mpsc::{self, Sender};
 use xorf::BinaryFuse8;
 
-use sediment::get_regkey_value;
+use crate::utils::get_regkey_value;
 
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
 type Limiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware<QuantaInstant>>;
@@ -475,7 +475,7 @@ pub async fn main(
 
                 range_states
                     .entry(range_name)
-                    .or_insert(Vec::new())
+                    .or_default()
                     .push(etag);
                 progress_bar.inc(1);
             }
@@ -490,7 +490,7 @@ pub async fn main(
             Ok(file) => Some(
                 BufReader::new(file)
                     .lines()
-                    .flatten()
+                    .map_while(Result::ok)
                     .collect::<Vec<String>>(),
             ),
             Err(err) => {

@@ -12,6 +12,7 @@ use windows_sys::Win32::{
 mod check;
 mod download;
 mod update;
+mod utils;
 
 /// Checks if this is an elevated process. It must be for
 /// the download and update commands to work.
