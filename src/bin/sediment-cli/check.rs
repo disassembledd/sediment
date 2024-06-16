@@ -1,4 +1,5 @@
 use clap::Parser;
+use sediment::PassInFilter;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -11,9 +12,9 @@ pub struct Check {
 
 /// Main entrypoint for the `check` subcommand.
 pub fn main(options: Check) {
-    // if PassInFilter(options.password) {
-    //     println!("Password found in compromised password list.");
-    // } else {
-    //     println!("Password not found.")
-    // }
+    if PassInFilter(options.password) {
+        println!("Password found in compromised password list.");
+    } else {
+        println!("Password not found.")
+    }
 }

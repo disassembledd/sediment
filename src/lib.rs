@@ -2,12 +2,13 @@
 use core::slice;
 use log::{error, info, warn};
 use std::{ptr::null_mut, string::FromUtf16Error};
+use windows_registry::Value;
 use windows_sys::Win32::Foundation::*;
 use zeroize::{Zeroize, Zeroizing};
 
 mod filter;
-mod regkeys;
 mod normalize;
+mod regkeys;
 
 pub use regkeys::get_regkey_value;
 
@@ -44,13 +45,14 @@ unsafe fn string_from_windows(
 }
 
 /// Initializes the Event Log provider on first load.
+#[no_mangle]
 pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
-    match winlog::init("Sediment") {
-        Ok(_) => {},
-        Err(_) => return false.into()
-    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        eventlog::init("Sediment", log::Level::Info).unwrap();
+        info!("Successfully loaded password filter.");
+    });
 
-    info!("Successfully loaded password filter.");
     true.into()
 }
 
@@ -59,6 +61,7 @@ pub extern "system" fn InitializeChangeNotify() -> BOOLEAN {
 /// ## Safety
 /// Called by Windows whenever a user successfully changes
 /// or sets their password.
+#[no_mangle]
 pub unsafe extern "system" fn PasswordChangeNotify(
     username: *mut UNICODE_STRING,
     _relative_id: u32,
@@ -94,6 +97,7 @@ pub unsafe extern "system" fn PasswordChangeNotify(
 /// ## Safety
 /// Called by Windows whenever a user attempts to change
 /// or set their password.
+#[no_mangle]
 pub unsafe extern "system" fn PasswordFilter(
     account_name: *mut UNICODE_STRING,
     _full_name: *mut UNICODE_STRING,
@@ -122,8 +126,8 @@ pub unsafe extern "system" fn PasswordFilter(
     };
 
     let normalize: u32 = match get_regkey_value("NormalizeFlag") {
-        Ok(norm) => norm,
-        Err(_) => {
+        Ok(Value::U32(norm)) => norm,
+        _ => {
             error!("Failed to retrieve 'NormalizeFlag' regkey.");
             return false.into();
         }
@@ -134,7 +138,10 @@ pub unsafe extern "system" fn PasswordFilter(
     }
 
     if !filter::check_pass_in_filter(password.as_str()) {
-        warn!("Password for {} failed compromised checklist.", user.as_str());
+        warn!(
+            "Password for {} failed compromised checklist.",
+            user.as_str()
+        );
         return false.into();
     }
 
@@ -182,7 +189,7 @@ mod tests {
     #[test]
     /// Asserts a true response with a known-good password.
     fn PasswordFilter_goodpassword() {
-        let mut password = create_unicode!("RustySediments");
+        let mut password = create_unicode!("VNTPJ23GvZh@Z@b72RJF");
 
         let true_bool: BOOLEAN = true.into();
         assert_eq!(

@@ -7,7 +7,7 @@ use std::{
     hash::{Hash, Hasher},
     io::{Read, Write},
 };
-use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+use windows_registry::LOCAL_MACHINE;
 use xorf::BinaryFuse8;
 
 #[derive(Parser)]
@@ -32,16 +32,15 @@ pub struct Update {
 fn add_compromised_pass(passwords: Vec<String>) {
     // Retrieve download path from registry
     let (dl_path, filter_path) = {
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let app_key = hklm
-            .create_subkey("SOFTWARE\\sediment")
+        let app_key = LOCAL_MACHINE
+            .create("SOFTWARE\\Sediment")
             .expect("Failed to open or create registry key");
 
         let dl_path: String = app_key
-            .get_value("DownloadPath")
+            .get_string("DownloadPath")
             .expect("Failed to open 'DownloadPath' key");
         let filter_path: String = app_key
-            .get_value("FilterPath")
+            .get_string("FilterPath")
             .expect("Failed to open 'FilterPath' key");
 
         (dl_path, filter_path)

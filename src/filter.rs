@@ -4,10 +4,11 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs::File,
     hash::{Hash, Hasher},
-    io::{self, Read},
-    os::windows::prelude::FileExt
+    io::Read,
+    os::windows::prelude::FileExt, path::Path,
 };
-use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+use windows_registry::LOCAL_MACHINE;
+use windows_result::Result;
 use xorf::prelude::bfuse::hash_of_hash;
 use zeroize::Zeroize;
 
@@ -22,7 +23,7 @@ pub(crate) fn check_pass_in_filter(password: &str) -> bool {
         }
     };
 
-    let mut filter_file = match File::open(format!("{filter_path}\\{file_name}")) {
+    let mut filter_file = match File::open(Path::new(&filter_path).join(file_name)) {
         Ok(filter_file) => filter_file,
         Err(err) => {
             error!("Failed to open filter file:\n{err:?}");
@@ -33,7 +34,7 @@ pub(crate) fn check_pass_in_filter(password: &str) -> bool {
     let (seed, segment_length, segment_length_mask, segment_count_length) =
         get_filter_metadata(&mut filter_file);
     if segment_count_length % segment_length != 0 {
-        error!("Filter file appears corrupt.");
+        error!("Filter file appears to be corrupt.");
         return false;
     }
 
@@ -73,31 +74,21 @@ fn get_name_and_key(password: &str) -> (String, u64) {
 }
 
 /// Retrieves the `FilterPath` key from the registry.
-fn get_filter_path() -> Result<String, io::Error> {
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let app_key = hklm.create_subkey("SOFTWARE\\sediment")?;
-
-    app_key.get_value("FilterPath")
+fn get_filter_path() -> Result<String> {
+    let app_key = LOCAL_MACHINE.create("SOFTWARE\\Sediment")?;
+    app_key.get_string("FilterPath")
 }
 
 /// Reads the first 20 bytes from the filter file for the
 /// metadata necessary to compute the hash indices.
 fn get_filter_metadata(filter_file: &mut File) -> (u64, u32, u32, u32) {
-    let mut buffer = [0; 8];
+    let mut buffer = [0; 20];
     filter_file.read_exact(&mut buffer).unwrap();
-    let seed = u64::from_le_bytes(buffer);
 
-    let mut buffer = [0; 4];
-    filter_file.read_exact(&mut buffer).unwrap();
-    let segment_length = u32::from_le_bytes(buffer);
-
-    buffer.fill(0);
-    filter_file.read_exact(&mut buffer).unwrap();
-    let segment_length_mask = u32::from_le_bytes(buffer);
-
-    buffer.fill(0);
-    filter_file.read_exact(&mut buffer).unwrap();
-    let segment_count_length = u32::from_le_bytes(buffer);
+    let seed = u64::from_le_bytes(buffer[..8].try_into().unwrap());
+    let segment_length = u32::from_le_bytes(buffer[8..12].try_into().unwrap());
+    let segment_length_mask = u32::from_le_bytes(buffer[12..16].try_into().unwrap());
+    let segment_count_length = u32::from_le_bytes(buffer[16..].try_into().unwrap());
 
     (
         seed,

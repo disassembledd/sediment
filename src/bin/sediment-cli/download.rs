@@ -23,9 +23,10 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc::{self, Sender};
+use windows_registry::Value;
 use xorf::BinaryFuse8;
 
-use crate::utils::get_regkey_value;
+use sediment::get_regkey_value;
 
 const BASE_URL: &str = "https://api.pwnedpasswords.com/range/";
 type Limiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware<QuantaInstant>>;
@@ -384,8 +385,8 @@ pub async fn main(
     // Retrieve app, download, and filter path from registry
     let (app_path, dl_path, filter_path) = {
         let app: String = match get_regkey_value("Path") {
-            Ok(path) => path,
-            Err(_) => {
+            Ok(Value::String(path)) => path,
+            _ => {
                 progress_bar.abandon_with_message(
                     "Could not find 'Path' key. Is the installation corrupt?",
                 );
@@ -396,8 +397,8 @@ pub async fn main(
         let download: String = match download_path {
             Some(path) => path.to_string_lossy().to_string(),
             None => match get_regkey_value("DownloadPath") {
-                Ok(path) => path,
-                Err(_) => {
+                Ok(Value::String(path)) => path,
+                _ => {
                     progress_bar.abandon_with_message(
                         "Could not find 'DownloadPath' key. Is the installation corrupt?",
                     );
@@ -410,8 +411,8 @@ pub async fn main(
             Some(path) => path.to_string_lossy().to_string(),
             None => {
                 match get_regkey_value("FilterPath") {
-                    Ok(path) => path,
-                    Err(_) => {
+                    Ok(Value::String(path)) => path,
+                    _ => {
                         progress_bar.abandon_with_message(
                             "Could not find 'FilterPath' key. Is the installation corrupt?",
                         );

@@ -11,7 +11,7 @@ homepage = "https://github.com/disassembledd/sediment"
 repository = "https://github.com/disassembledd/sediment"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["lib", "cdylib"]
 
 [[bin]]
 name = "sediment-cli"
@@ -25,12 +25,14 @@ name = "filter_benchmark"
 harness = false
 
 [dependencies]
-windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+windows-sys = { version = "0.52.0", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 winlog = { package = "winlog2", version = "0.3" }
 xorf = { git = "https://github.com/rusty-sediment/xorf.git", branch = "patch-1", version = "0.8" }
 bincode = "1.3"
 zeroize = { version = "1.6", features = ["zeroize_derive"] }
-winreg = "0.5"
+windows-registry = "0.1.2"
+windows-result = "0.1.2"
+eventlog = "0.2.2"
 sha1 = "0.10"
 log = "0.4"
 
