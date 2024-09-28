@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use tracing::{error, instrument};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -53,9 +54,17 @@ enum Commands {
 }
 
 /// Main entrypoint for the CLI.
+#[instrument]
 fn main() {
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("none,sediment-cli=info")
+        .event_format(tracing_subscriber::fmt::format())
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to initialize logging!");
+
     if !is_elevated() {
-        println!("Please run the CLI as administrator. It requires access to registry keys for configuration purposes.");
+        error!("Please run the CLI as administrator. It requires access to registry keys for configuration purposes.");
         return;
     }
 
@@ -68,10 +77,14 @@ fn main() {
 
     let handler = Arc::new(AtomicBool::new(true));
     let handler_clone = handler.clone();
-    ctrlc::set_handler(move || {
-        handler_clone.store(false, Ordering::SeqCst);
-    })
-    .expect("Failed to set Ctrl+C handler");
+    let store_res = move || { handler_clone.store(false, Ordering::SeqCst); };
+    match ctrlc::set_handler(store_res) {
+        Ok(_) => {},
+        Err(err) => {
+            error!("Failed to set Ctrl+C handler: {err}");
+            return;
+        }
+    }
 
     match cli.command {
         Commands::Download(options) => {

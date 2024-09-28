@@ -236,8 +236,8 @@ fn finish_streams(
 
         // Replace previous downloaded range with results from tempfile
         match rename(
-            format!("{dl_path}\\{range}.temp"),
-            format!("{dl_path}\\{range}"),
+            Path::new(&dl_path).join(format!("{range}.temp")),
+            Path::new(&dl_path).join(&range),
         ) {
             Ok(_) => {
                 // On successful move, save download state of all ranges involved
@@ -318,7 +318,7 @@ fn hashes_to_filters(dl_path: String, filter_path: String, progress_bar: &Progre
                     // Scope to drop `output_file` when finished writing
                     {
                         let mut output_file =
-                            match File::create(format!("{filter_path}\\{file_name}.temp")) {
+                            match File::create(Path::new(&filter_path).join(format!("{file_name}.temp"))) {
                                 Ok(file) => file,
                                 Err(err) => {
                                     println!("Failed to create temp hash filter file: {err:?}");
@@ -351,8 +351,8 @@ fn hashes_to_filters(dl_path: String, filter_path: String, progress_bar: &Progre
                     }
 
                     match rename(
-                        format!("{filter_path}\\{file_name}.temp"),
-                        format!("{filter_path}\\{file_name}"),
+                        Path::new(&filter_path).join(format!("{file_name}.temp")),
+                        Path::new(&filter_path).join(file_name),
                     ) {
                         Ok(_) => {}
                         Err(err) => println!(
@@ -425,7 +425,7 @@ pub async fn main(
         (app, download, filter)
     };
 
-    let download_state = match sled::open(format!("{app_path}\\state")) {
+    let download_state = match sled::open(Path::new(&app_path).join("state")) {
         Ok(db) => db,
         Err(_account_name) => {
             progress_bar.abandon_with_message(
@@ -458,7 +458,7 @@ pub async fn main(
         match res {
             Ok((range, etag, content)) => {
                 let range_name = range[..2].to_owned();
-                let filepath = format!("{dl_path}\\{range_name}.temp");
+                let filepath = Path::new(&dl_path).join(format!("{range_name}.temp"));
 
                 let stream = range_streams
                     .entry(range_name.clone())
@@ -486,8 +486,8 @@ pub async fn main(
         }
     }
 
-    let user_data = if Path::new(&format!("{dl_path}\\user")).exists() {
-        match File::open(format!("{dl_path}\\user")) {
+    let user_data = if Path::new(&dl_path).join("user").exists() {
+        match File::open(Path::new(&dl_path).join("user")) {
             Ok(file) => Some(
                 BufReader::new(file)
                     .lines()

@@ -6,6 +6,7 @@ use std::{
     fs::{rename, File, OpenOptions},
     hash::{Hash, Hasher},
     io::{Read, Write},
+    path::Path,
 };
 use windows_registry::LOCAL_MACHINE;
 use xorf::BinaryFuse8;
@@ -50,7 +51,7 @@ fn add_compromised_pass(passwords: Vec<String>) {
     let mut user_file = OpenOptions::new()
         .append(true)
         .create(true)
-        .open(format!("{dl_path}\\user"))
+        .open(Path::new(&dl_path).join("user"))
         .expect("Failed to open or create user file");
 
     // Adds each compromised password hash to the user file,
@@ -69,7 +70,7 @@ fn add_compromised_pass(passwords: Vec<String>) {
             .expect("Failed to write to user file");
 
         if !processed_files.contains(&pass_range) {
-            if let Ok(file) = File::open(format!("{dl_path}\\{pass_range}")) {
+            if let Ok(file) = File::open(Path::new(&dl_path).join(&pass_range)) {
                 let mut decoder = GzDecoder::new(file);
                 let mut hashes = String::new();
                 decoder
@@ -121,13 +122,14 @@ fn add_compromised_pass(passwords: Vec<String>) {
 
         // Scope to drop `output_file` when finished writing
         {
-            let mut output_file = match File::create(format!("{filter_path}\\{range}.temp")) {
-                Ok(file) => file,
-                Err(err) => {
-                    println!("Failed to create temp hash filter file: {err:?}");
-                    continue;
-                }
-            };
+            let mut output_file =
+                match File::create(Path::new(&filter_path).join(format!("{range}.temp"))) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        println!("Failed to create temp hash filter file: {err:?}");
+                        continue;
+                    }
+                };
 
             let metadata_results = vec![
                 output_file.write_all(&filter.seed.to_le_bytes()),
@@ -152,8 +154,8 @@ fn add_compromised_pass(passwords: Vec<String>) {
         }
 
         match rename(
-            format!("{filter_path}\\{range}.temp"),
-            format!("{filter_path}\\{range}"),
+            Path::new(&filter_path).join(format!("{range}.temp")),
+            Path::new(&filter_path).join(range),
         ) {
             Ok(_) => {}
             Err(err) => {
